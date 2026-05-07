@@ -1,0 +1,853 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vita-Guide | ビタ・ガイド</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-storage.js"></script>
+    <style>
+        body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; }
+        .animate-fadeIn { animation: fadeIn 0.45s ease-out forwards; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+        .glass-card {
+            background: linear-gradient(145deg, rgba(30, 41, 59, 0.92), rgba(15, 23, 42, 0.88));
+            border: 1px solid rgba(148, 163, 184, 0.12);
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.45);
+        }
+        .glow-ring { box-shadow: 0 0 0 4px rgba(34, 211, 238, 0.15), 0 20px 40px rgba(6, 182, 212, 0.25); }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const firebaseConfig = {
+            apiKey: "AIzaSyCcCdzwoJSVqJMEwC1ZWmfnS6drC64shbg",
+            authDomain: "my-balance-app-226ad.firebaseapp.com",
+            projectId: "my-balance-app-226ad",
+            storageBucket: "my-balance-app-226ad.firebasestorage.app",
+            messagingSenderId: "984618962819",
+            appId: "1:984618962819:web:3386d54d88ca794aa670b6"
+        };
+
+        firebase.initializeApp(firebaseConfig);
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+        const storage = firebase.storage();
+        const geminiApiKey = "AIzaSyDvftRYvUu1o9lsck4iAmEpUJWRVK8D5zc";
+
+        /** 1.5 の短いモデル名は API で 404 になることがあるため、新しい順に試す */
+        const GEMINI_MODEL_FALLBACKS = [
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+            "gemini-2.0-flash",
+            "gemini-1.5-flash-8b",
+        ];
+
+        /** 成人向け目安（1日）— ダッシュボードの過不足表示用（おおよその目安） */
+        const VITAMIN_RDA = {
+            A_ug_RAE: { label: "ビタミンA", unit: "µg RAE", rda: 700 },
+            B1_mg: { label: "ビタミンB1", unit: "mg", rda: 1.0 },
+            B2_mg: { label: "ビタミンB2", unit: "mg", rda: 1.1 },
+            B6_mg: { label: "ビタミンB6", unit: "mg", rda: 1.2 },
+            B12_ug: { label: "ビタミンB12", unit: "µg", rda: 2.4 },
+            C_mg: { label: "ビタミンC", unit: "mg", rda: 100 },
+            D_ug: { label: "ビタミンD", unit: "µg", rda: 5 },
+            E_mg: { label: "ビタミンE", unit: "mg", rda: 6.5 },
+            folate_ug: { label: "葉酸", unit: "µg", rda: 240 },
+            niacin_mg: { label: "ナイアシン", unit: "mg", rda: 13 },
+        };
+
+        function parseGeminiJson(text) {
+            let t = text.trim();
+            const fence = /^```(?:json)?\s*([\s\S]*?)```$/m.exec(t);
+            if (fence) t = fence[1].trim();
+            return JSON.parse(t);
+        }
+
+        function sleep(ms) {
+            return new Promise((resolve) => setTimeout(resolve, ms));
+        }
+
+        /** 503 / 429 は一時的な混雑・枠の問題が多いのでリトライし、ダメなら次モデルへ */
+        async function analyzeMealWithGemini(base64Image, mimeType, profile) {
+            const prompt = `あなたは日本語で答えるプロの管理栄養士です。添付の食事写真を解析し、次のJSONだけを返してください（説明文やマークダウン禁止）。
+
+プロフィール（参考）:
+- ニックネーム: ${profile?.name || "不明"}
+- 現在体重: ${profile?.weight ?? "?"} kg
+- 目標体重: ${profile?.goalWeight ?? "?"} kg
+
+JSONスキーマ:
+{
+  "menu": ["推定メニュー名"],
+  "calories_kcal": number,
+  "protein_g": number,
+  "fat_g": number,
+  "carbs_g": number,
+  "vitamins": {
+    "A_ug_RAE": number,
+    "B1_mg": number,
+    "B2_mg": number,
+    "B6_mg": number,
+    "B12_ug": number,
+    "C_mg": number,
+    "D_ug": number,
+    "E_mg": number,
+    "folate_ug": number,
+    "niacin_mg": number
+  },
+  "vitamin_insights": [
+    { "key": "C_mg", "status": "不足|適量|過多の可能性", "note": "短い解説", "food_sources": ["補える食材1","食材2"] }
+  ],
+  "goal_advice": "目標体重に向けた一言アドバイス（任意）",
+  "meal_comment": "この食事全体のコメント（短く）"
+}
+
+ビタミンは写真から妥当に推定し、不明な場合は低めに推定して vitamin_insights で触れてください。`;
+
+            const body = JSON.stringify({
+                contents: [{
+                    parts: [
+                        { text: prompt },
+                        { inline_data: { mime_type: mimeType, data: base64Image } }
+                    ]
+                }],
+                generationConfig: {
+                    temperature: 0.2,
+                    maxOutputTokens: 2048,
+                    responseMimeType: "application/json"
+                }
+            });
+
+            const maxAttemptsPerModel = 4;
+            let last404Body = "";
+            let lastOverloadBody = "";
+
+            for (const model of GEMINI_MODEL_FALLBACKS) {
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(geminiApiKey)}`;
+
+                for (let attempt = 0; attempt < maxAttemptsPerModel; attempt++) {
+                    if (attempt > 0) {
+                        const waitMs = Math.min(12000, 2000 * Math.pow(2, attempt - 1));
+                        await sleep(waitMs);
+                    }
+
+                    const res = await fetch(url, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body
+                    });
+                    const responseText = await res.text();
+
+                    if (res.ok) {
+                        let data;
+                        try {
+                            data = JSON.parse(responseText);
+                        } catch {
+                            throw new Error("Gemini API: 応答の解析に失敗しました");
+                        }
+                        const part = data?.candidates?.[0]?.content?.parts?.[0];
+                        const raw = part?.text;
+                        if (!raw) throw new Error("解析結果が空です");
+                        return parseGeminiJson(raw);
+                    }
+
+                    if (res.status === 404) {
+                        last404Body = responseText;
+                        break;
+                    }
+
+                    if (res.status === 503 || res.status === 429) {
+                        lastOverloadBody = responseText;
+                        if (attempt === maxAttemptsPerModel - 1) {
+                            break;
+                        }
+                        continue;
+                    }
+
+                    throw new Error(`Gemini API: ${res.status} ${responseText}`);
+                }
+            }
+
+            if (lastOverloadBody) {
+                throw new Error(
+                    "Gemini API が混雑中（503）か利用枠に達しています（429）。数分後にもう一度お試しください。 " +
+                    lastOverloadBody
+                );
+            }
+
+            throw new Error(
+                "Gemini API: 利用可能なモデルが見つかりません（404）。 " +
+                "AI Studio でモデル一覧を確認し、GEMINI_MODEL_FALLBACKS を編集してください。 " +
+                last404Body
+            );
+        }
+
+        function startOfToday() {
+            const d = new Date();
+            d.setHours(0, 0, 0, 0);
+            return d;
+        }
+
+        function sumVitaminsFromMeals(meals) {
+            const keys = Object.keys(VITAMIN_RDA);
+            const sum = {};
+            keys.forEach((k) => { sum[k] = 0; });
+            meals.forEach((m) => {
+                const v = m.vitamins || {};
+                keys.forEach((k) => {
+                    const n = Number(v[k]);
+                    if (!Number.isNaN(n)) sum[k] += n;
+                });
+            });
+            return sum;
+        }
+
+        function pfcFromMeals(meals) {
+            let p = 0, f = 0, c = 0, kcal = 0;
+            meals.forEach((m) => {
+                p += Number(m.protein_g) || 0;
+                f += Number(m.fat_g) || 0;
+                c += Number(m.carbs_g) || 0;
+                kcal += Number(m.calories_kcal) || 0;
+            });
+            return { ...pfcPercents(p, f, c), protein_g: p, fat_g: f, carbs_g: c, kcalFromMacros: kcal };
+        }
+
+        function pfcPercents(protein_g, fat_g, carbs_g) {
+            const p = Number(protein_g) || 0;
+            const f = Number(fat_g) || 0;
+            const c = Number(carbs_g) || 0;
+            const pK = p * 4, fK = f * 9, cK = c * 4;
+            const denom = pK + fK + cK;
+            if (denom <= 0) return { pPct: 0, fPct: 0, cPct: 0 };
+            return {
+                pPct: Math.round((pK / denom) * 100),
+                fPct: Math.round((fK / denom) * 100),
+                cPct: Math.round((cK / denom) * 100)
+            };
+        }
+
+        function suggestedDailyCalories(profile) {
+            const w = Number(profile?.weight);
+            const gw = Number(profile?.goalWeight);
+            if (!Number.isFinite(w)) return 1800;
+            let base = Math.round(w * 28);
+            if (Number.isFinite(gw) && gw < w - 0.5) base = Math.max(1200, base - 300);
+            if (Number.isFinite(gw) && gw > w + 0.5) base = base + 200;
+            return base;
+        }
+
+        function App() {
+            const [user, setUser] = React.useState(null);
+            const [profile, setProfile] = React.useState(null);
+            const [loading, setLoading] = React.useState(true);
+            const [view, setView] = React.useState('loading');
+
+            React.useEffect(() => {
+                return auth.onAuthStateChanged(async (u) => {
+                    if (u) {
+                        setUser(u);
+                        const docSnap = await db.collection("users").doc(u.uid).get();
+                        if (docSnap.exists) {
+                            setProfile(docSnap.data());
+                            setView('dashboard');
+                        } else {
+                            setView('profile-setup');
+                        }
+                    } else {
+                        auth.signInAnonymously();
+                    }
+                    setLoading(false);
+                });
+            }, []);
+
+            if (loading) {
+                return (
+                    <div className="flex flex-col items-center justify-center min-h-screen bg-slate-950 text-cyan-300/90">
+                        <div className="w-12 h-12 rounded-full border-2 border-cyan-400/30 border-t-cyan-400 animate-spin mb-4" />
+                        <p className="font-semibold tracking-wide">Vita-Guide 起動中</p>
+                    </div>
+                );
+            }
+
+            if (view === 'profile-setup') {
+                return (
+                    <ProfileSetup
+                        onComplete={(d) => { setProfile(d); setView('dashboard'); }}
+                        userId={user?.uid}
+                    />
+                );
+            }
+
+            return (
+                <Dashboard
+                    user={user}
+                    profile={profile}
+                    setProfile={setProfile}
+                />
+            );
+        }
+
+        function ProfileSetup({ onComplete, userId }) {
+            const [name, setName] = React.useState('');
+            const [weight, setWeight] = React.useState('60');
+            const [goalWeight, setGoalWeight] = React.useState('58');
+            const [busy, setBusy] = React.useState(false);
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                setBusy(true);
+                const data = {
+                    name: name.trim(),
+                    weight: parseFloat(weight) || 60,
+                    goalWeight: parseFloat(goalWeight) || 60,
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                };
+                await db.collection("users").doc(userId).set(data);
+                onComplete({ ...data, createdAt: new Date() });
+                setBusy(false);
+            };
+
+            return (
+                <div className="min-h-screen flex items-center justify-center p-6 bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950">
+                    <div className="w-full max-w-md glass-card rounded-3xl p-8 animate-fadeIn">
+                        <p className="text-xs font-bold text-cyan-400/80 tracking-widest mb-2">VITA-GUIDE</p>
+                        <h1 className="text-3xl font-black text-white mb-1">プロフィール</h1>
+                        <p className="text-slate-400 text-sm mb-8">メール登録は不要です。匿名でデータはあなた専用に保存されます。</p>
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            <div>
+                                <label className="text-xs text-slate-500 font-bold">ニックネーム</label>
+                                <input
+                                    className="mt-1 w-full bg-slate-800/80 border border-slate-600/50 rounded-2xl px-4 py-3 text-white outline-none focus:border-cyan-500/60"
+                                    value={name}
+                                    onChange={(e) => setName(e.target.value)}
+                                    placeholder="表示名"
+                                    required
+                                />
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="text-xs text-slate-500 font-bold">現在の体重 (kg)</label>
+                                    <input
+                                        type="number"
+                                        step="0.1"
+                                        className="mt-1 w-full bg-slate-800/80 border border-slate-600/50 rounded-2xl px-4 py-3 text-white outline-none focus:border-cyan-500/60"
+                                        value={weight}
+                                        onChange={(e) => setWeight(e.target.value)}
+                                        required
+                                    />
+                                </div>
+                                <div>
+                                    <label className="text-xs text-slate-500 font-bold">目標体重 (kg)</label>
+                                    <input
+                                        type="number"
+                                        step="0.1"
+                                        className="mt-1 w-full bg-slate-800/80 border border-slate-600/50 rounded-2xl px-4 py-3 text-white outline-none focus:border-cyan-500/60"
+                                        value={goalWeight}
+                                        onChange={(e) => setGoalWeight(e.target.value)}
+                                        required
+                                    />
+                                </div>
+                            </div>
+                            <button
+                                type="submit"
+                                disabled={busy}
+                                className="w-full bg-gradient-to-r from-cyan-500 to-teal-500 text-slate-950 font-black py-4 rounded-2xl glow-ring disabled:opacity-50"
+                            >
+                                {busy ? "保存中…" : "はじめる"}
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            );
+        }
+
+        function PfcBars({ pPct, fPct, cPct }) {
+            return (
+                <div className="space-y-2">
+                    <p className="text-xs font-bold text-slate-400">PFC バランス（推定エネルギー比）</p>
+                    <div className="flex h-3 rounded-full overflow-hidden bg-slate-800">
+                        <div className="bg-cyan-500" style={{ width: `${pPct}%` }} title={`P ${pPct}%`} />
+                        <div className="bg-amber-400" style={{ width: `${fPct}%` }} title={`F ${fPct}%`} />
+                        <div className="bg-violet-500" style={{ width: `${cPct}%` }} title={`C ${cPct}%`} />
+                    </div>
+                    <div className="flex justify-between text-[10px] text-slate-500">
+                        <span className="text-cyan-400">P {pPct}%</span>
+                        <span className="text-amber-300">F {fPct}%</span>
+                        <span className="text-violet-400">C {cPct}%</span>
+                    </div>
+                </div>
+            );
+        }
+
+        function VitaminGrid({ vitamins, insights, title }) {
+            const keys = Object.keys(VITAMIN_RDA);
+            return (
+                <div className="space-y-3">
+                    {title && <p className="text-xs font-bold text-slate-400">{title}</p>}
+                    <div className="grid gap-2">
+                        {keys.map((key) => {
+                            const meta = VITAMIN_RDA[key];
+                            const amount = Number(vitamins?.[key]) || 0;
+                            const pct = Math.min(200, Math.round((amount / meta.rda) * 100));
+                            let barColor = "bg-emerald-500";
+                            if (pct < 50) barColor = "bg-rose-500";
+                            else if (pct < 100) barColor = "bg-amber-400";
+                            else if (pct > 150) barColor = "bg-orange-400";
+                            const insight = (insights || []).find((i) => i.key === key);
+                            return (
+                                <div key={key} className="bg-slate-800/60 rounded-2xl p-3 border border-slate-700/50">
+                                    <div className="flex justify-between items-baseline gap-2">
+                                        <span className="text-sm font-bold text-slate-200">{meta.label}</span>
+                                        <span className="text-xs text-slate-400">
+                                            {amount.toFixed(amount < 10 && key.includes("ug") ? 1 : 1)}{meta.unit}
+                                            <span className="text-slate-500"> / 目安 {meta.rda}{meta.unit}</span>
+                                        </span>
+                                    </div>
+                                    <div className="mt-2 h-2 rounded-full bg-slate-900 overflow-hidden">
+                                        <div className={`h-full rounded-full ${barColor}`} style={{ width: `${Math.min(100, pct)}%` }} />
+                                    </div>
+                                    <p className="text-[10px] text-slate-500 mt-1">摂取目安に対し 約{pct}%</p>
+                                    {insight && (
+                                        <div className="mt-2 text-xs text-slate-300 border-t border-slate-700/50 pt-2">
+                                            <span className="text-cyan-400/90 font-bold">{insight.status}</span>
+                                            {insight.note && <span className="text-slate-400"> — {insight.note}</span>}
+                                            {insight.food_sources?.length > 0 && (
+                                                <p className="text-slate-500 mt-1">
+                                                    補える食材: {insight.food_sources.join("、")}
+                                                </p>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            );
+        }
+
+        function Dashboard({ user, profile, setProfile }) {
+            const [meals, setMeals] = React.useState([]);
+            const [loadingMeals, setLoadingMeals] = React.useState(true);
+            const [sheetOpen, setSheetOpen] = React.useState(false);
+            const [profileOpen, setProfileOpen] = React.useState(false);
+            const [editName, setEditName] = React.useState(profile?.name || "");
+            const [editWeight, setEditWeight] = React.useState(String(profile?.weight ?? ""));
+            const [editGoal, setEditGoal] = React.useState(String(profile?.goalWeight ?? ""));
+            const [analyzing, setAnalyzing] = React.useState(false);
+            const [error, setError] = React.useState(null);
+            const [previewResult, setPreviewResult] = React.useState(null);
+            const [previewFile, setPreviewFile] = React.useState(null);
+            const [previewUrl, setPreviewUrl] = React.useState(null);
+            const fileInputRef = React.useRef(null);
+
+            const dailyTarget = suggestedDailyCalories(profile);
+            const todayKcal = meals.reduce((s, m) => s + (Number(m.calories_kcal) || 0), 0);
+            const remaining = Math.max(0, dailyTarget - todayKcal);
+            const pfc = pfcFromMeals(meals);
+            const vitSum = sumVitaminsFromMeals(meals);
+
+            const loadMeals = React.useCallback(async () => {
+                if (!user?.uid) return;
+                setLoadingMeals(true);
+                const t0 = firebase.firestore.Timestamp.fromDate(startOfToday());
+                try {
+                    const snap = await db.collection("users").doc(user.uid).collection("meals")
+                        .where("createdAt", ">=", t0)
+                        .orderBy("createdAt", "desc")
+                        .get();
+                    const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+                    setMeals(list);
+                } catch (e) {
+                    console.error(e);
+                    setError("食事ログの読み込みに失敗しました。Firestore のインデックスが必要な場合があります。");
+                }
+                setLoadingMeals(false);
+            }, [user?.uid]);
+
+            React.useEffect(() => { loadMeals(); }, [loadMeals]);
+
+            React.useEffect(() => {
+                if (profileOpen) {
+                    setEditName(profile?.name || "");
+                    setEditWeight(profile?.weight != null ? String(profile.weight) : "");
+                    setEditGoal(profile?.goalWeight != null ? String(profile.goalWeight) : "");
+                }
+            }, [profileOpen, profile]);
+
+            const saveProfileEdit = async (e) => {
+                e.preventDefault();
+                if (!user?.uid) return;
+                const w = parseFloat(editWeight);
+                const g = parseFloat(editGoal);
+                const data = {
+                    name: (editName.trim() || profile?.name || "ユーザー"),
+                    weight: Number.isFinite(w) ? w : (profile?.weight ?? 60),
+                    goalWeight: Number.isFinite(g) ? g : (profile?.goalWeight ?? profile?.weight ?? 60),
+                };
+                await db.collection("users").doc(user.uid).update(data);
+                setProfile({ ...profile, ...data });
+                setProfileOpen(false);
+            };
+
+            const openCamera = () => {
+                setError(null);
+                setPreviewResult(null);
+                if (previewUrl) URL.revokeObjectURL(previewUrl);
+                setPreviewUrl(null);
+                setPreviewFile(null);
+                setSheetOpen(true);
+                setTimeout(() => fileInputRef.current?.click(), 50);
+            };
+
+            const onFileChange = async (e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (!file || !file.type.startsWith("image/")) {
+                    setError("画像ファイルを選んでください");
+                    return;
+                }
+                setPreviewFile(file);
+                const url = URL.createObjectURL(file);
+                setPreviewUrl(url);
+                setAnalyzing(true);
+                setError(null);
+                try {
+                    const dataUrl = await new Promise((resolve, reject) => {
+                        const reader = new FileReader();
+                        reader.onload = () => resolve(reader.result);
+                        reader.onerror = reject;
+                        reader.readAsDataURL(file);
+                    });
+                    const m = /^data:([^;]+);base64,(.+)$/.exec(dataUrl);
+                    if (!m) throw new Error("画像の読み込みに失敗しました");
+                    const analysis = await analyzeMealWithGemini(m[2], m[1], profile);
+                    setPreviewResult(analysis);
+                } catch (err) {
+                    console.error(err);
+                    setError(err.message || "解析に失敗しました");
+                }
+                setAnalyzing(false);
+            };
+
+            const saveMeal = async () => {
+                if (!user?.uid || !previewFile || !previewResult) return;
+                setAnalyzing(true);
+                setError(null);
+                try {
+                    const mealId = db.collection("users").doc(user.uid).collection("meals").doc().id;
+                    const path = `users/${user.uid}/meals/${mealId}.jpg`;
+                    const ref = storage.ref(path);
+                    await ref.put(previewFile);
+                    const imageUrl = await ref.getDownloadURL();
+                    await db.collection("users").doc(user.uid).collection("meals").doc(mealId).set({
+                        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        imageUrl,
+                        menu: previewResult.menu || [],
+                        calories_kcal: previewResult.calories_kcal,
+                        protein_g: previewResult.protein_g,
+                        fat_g: previewResult.fat_g,
+                        carbs_g: previewResult.carbs_g,
+                        vitamins: previewResult.vitamins || {},
+                        vitamin_insights: previewResult.vitamin_insights || [],
+                        meal_comment: previewResult.meal_comment || "",
+                        goal_advice: previewResult.goal_advice || ""
+                    });
+                    if (previewUrl) URL.revokeObjectURL(previewUrl);
+                    setPreviewUrl(null);
+                    setPreviewFile(null);
+                    setPreviewResult(null);
+                    setSheetOpen(false);
+                    await loadMeals();
+                } catch (err) {
+                    console.error(err);
+                    setError("保存に失敗しました（Storage / Firestore の権限を確認してください）");
+                }
+                setAnalyzing(false);
+            };
+
+            const discardPreview = () => {
+                if (previewUrl) URL.revokeObjectURL(previewUrl);
+                setPreviewUrl(null);
+                setPreviewFile(null);
+                setPreviewResult(null);
+                setSheetOpen(false);
+            };
+
+            return (
+                <div className="max-w-lg mx-auto min-h-screen pb-36 px-4 pt-6 bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950">
+                    <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        className="hidden"
+                        onChange={onFileChange}
+                    />
+
+                    <header className="mb-6 flex justify-between items-start gap-3">
+                        <div className="min-w-0">
+                            <p className="text-xs font-bold text-cyan-400/80 tracking-widest">HELLO</p>
+                            <h1 className="text-3xl font-black text-white tracking-tight truncate">{profile?.name}</h1>
+                            <p className="text-xs text-slate-500 mt-1">
+                                {(profile?.weight != null ? profile.weight : "?")} kg
+                                <span className="text-slate-600"> · </span>
+                                目標{" "}
+                                {profile?.goalWeight != null ? `${profile.goalWeight} kg` : "未設定"}
+                            </p>
+                        </div>
+                        <div className="flex flex-col items-end gap-2 shrink-0">
+                            <button
+                                type="button"
+                                onClick={() => setProfileOpen(true)}
+                                className="text-xs font-bold text-cyan-400/90 border border-cyan-500/30 rounded-full px-3 py-1.5 hover:bg-cyan-500/10"
+                            >
+                                プロフィール
+                            </button>
+                            <div className="text-right text-[10px] text-slate-500 max-w-[140px]">
+                                匿名<br />
+                                <span className="break-all text-slate-600">{user?.uid?.slice(0, 10)}…</span>
+                            </div>
+                        </div>
+                    </header>
+
+                    <div className="glass-card rounded-3xl p-6 mb-4 animate-fadeIn">
+                        <p className="text-xs font-bold text-slate-400 mb-1">今日の摂取カロリー</p>
+                        <div className="flex items-baseline gap-2">
+                            <span className="text-5xl font-black text-white tabular-nums">{Math.round(todayKcal)}</span>
+                            <span className="text-lg font-bold text-slate-500">/ {dailyTarget} kcal</span>
+                        </div>
+                        <p className="text-sm text-cyan-300/90 mt-2 font-semibold">
+                            残り約 {Math.round(remaining)} kcal（目安・活動量は個人差あり）
+                        </p>
+                        {meals.length > 0 && (
+                            <div className="mt-4 pt-4 border-t border-slate-700/50">
+                                <PfcBars pPct={pfc.pPct} fPct={pfc.fPct} cPct={pfc.cPct} />
+                                <p className="text-[10px] text-slate-500 mt-2">
+                                    タンパク質 {pfc.protein_g.toFixed(0)}g / 脂質 {pfc.fat_g.toFixed(0)}g / 炭水 {pfc.carbs_g.toFixed(0)}g（本日分合計）
+                                </p>
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="glass-card rounded-3xl p-5 mb-4">
+                        <h2 className="text-sm font-black text-white mb-3 flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full bg-cyan-400 shadow-[0_0_8px_#22d3ee]" />
+                            今日のビタミン（推定・合計）
+                        </h2>
+                        {loadingMeals ? (
+                            <p className="text-slate-500 text-sm">読み込み中…</p>
+                        ) : meals.length === 0 ? (
+                            <p className="text-slate-500 text-sm">食事を記録すると、ここに1日の推定合計が表示されます。</p>
+                        ) : (
+                            <VitaminGrid vitamins={vitSum} insights={null} />
+                        )}
+                    </div>
+
+                    <div className="glass-card rounded-3xl p-5 mb-4">
+                        <h2 className="text-sm font-black text-white mb-3">食事ログ（今日）</h2>
+                        {error && !sheetOpen && (
+                            <p className="text-rose-400 text-xs mb-2">{error}</p>
+                        )}
+                        {loadingMeals ? (
+                            <p className="text-slate-500 text-sm">読み込み中…</p>
+                        ) : meals.length === 0 ? (
+                            <p className="text-slate-500 text-sm">まだ記録がありません。下のボタンで撮影してください。</p>
+                        ) : (
+                            <ul className="space-y-3">
+                                {meals.map((m) => (
+                                    <li key={m.id} className="flex gap-3 bg-slate-800/40 rounded-2xl p-3 border border-slate-700/40">
+                                        {m.imageUrl ? (
+                                            <img src={m.imageUrl} alt="" className="w-20 h-20 rounded-xl object-cover shrink-0" />
+                                        ) : (
+                                            <div className="w-20 h-20 rounded-xl bg-slate-800 shrink-0" />
+                                        )}
+                                        <div className="min-w-0 flex-1">
+                                            <p className="text-sm font-bold text-white truncate">{(m.menu || []).join("、")}</p>
+                                            <p className="text-xs text-cyan-400/90 font-bold">{m.calories_kcal} kcal</p>
+                                            {m.meal_comment && (
+                                                <p className="text-[11px] text-slate-400 mt-1 line-clamp-2">{m.meal_comment}</p>
+                                            )}
+                                        </div>
+                                    </li>
+                                ))}
+                            </ul>
+                        )}
+                    </div>
+
+                    {/* 中央 FAB */}
+                    <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-40">
+                        <button
+                            type="button"
+                            onClick={openCamera}
+                            className="w-24 h-24 rounded-full bg-gradient-to-br from-cyan-400 to-teal-600 flex items-center justify-center glow-ring active:scale-95 transition-transform shadow-2xl"
+                            aria-label="食事を撮影"
+                        >
+                            <svg className="w-11 h-11 text-slate-950" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                    d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                    d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                            </svg>
+                        </button>
+                        <p className="text-center text-[10px] text-slate-500 mt-2 font-bold tracking-wider">SCAN MEAL</p>
+                    </div>
+
+                    {/* 解析シート */}
+                    {sheetOpen && (
+                        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+                            <div className="w-full max-w-lg glass-card rounded-3xl max-h-[90vh] overflow-y-auto p-5 animate-fadeIn border-cyan-500/20">
+                                <div className="flex justify-between items-center mb-4">
+                                    <h2 className="text-lg font-black text-white">解析結果</h2>
+                                    <button type="button" onClick={discardPreview} className="text-slate-400 text-sm font-bold">閉じる</button>
+                                </div>
+                                {previewUrl && (
+                                    <img src={previewUrl} alt="プレビュー" className="w-full rounded-2xl mb-4 max-h-48 object-cover" />
+                                )}
+                                {analyzing && !previewResult && (
+                                    <div className="flex flex-col items-center py-10">
+                                        <div className="w-10 h-10 rounded-full border-2 border-cyan-400/30 border-t-cyan-400 animate-spin mb-3" />
+                                        <p className="text-cyan-200/90 text-sm font-semibold">Gemini が栄養・ビタミンを解析中…</p>
+                                    </div>
+                                )}
+                                {error && (
+                                    <p className="text-rose-400 text-sm mb-3">{error}</p>
+                                )}
+                                {previewResult && (
+                                    <>
+                                        <div className="mb-4">
+                                            <p className="text-xs text-slate-500 font-bold">推定メニュー</p>
+                                            <p className="text-white font-bold">{(previewResult.menu || []).join("、")}</p>
+                                            <p className="text-3xl font-black text-cyan-400 mt-2 tabular-nums">{previewResult.calories_kcal} <span className="text-lg text-slate-400">kcal</span></p>
+                                        </div>
+                                        <div className="mb-4 p-3 rounded-2xl bg-slate-800/50 border border-slate-700/50">
+                                            <PfcBars {...pfcPercents(previewResult.protein_g, previewResult.fat_g, previewResult.carbs_g)} />
+                                        </div>
+                                        {(previewResult.meal_comment || previewResult.goal_advice) && (
+                                            <div className="mb-4 text-sm text-slate-300 space-y-2">
+                                                {previewResult.meal_comment && (
+                                                    <p><span className="text-slate-500 font-bold">食事コメント</span><br />{previewResult.meal_comment}</p>
+                                                )}
+                                                {previewResult.goal_advice && (
+                                                    <p><span className="text-slate-500 font-bold">目標向けアドバイス</span><br />{previewResult.goal_advice}</p>
+                                                )}
+                                            </div>
+                                        )}
+                                        <div className="mb-6">
+                                            <h3 className="text-sm font-black text-white mb-2 flex items-center gap-2">
+                                                ビタミン詳細（この食事）
+                                            </h3>
+                                            <VitaminGrid
+                                                vitamins={previewResult.vitamins}
+                                                insights={previewResult.vitamin_insights}
+                                            />
+                                        </div>
+                                        <div className="flex gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={discardPreview}
+                                                className="flex-1 py-3 rounded-2xl border border-slate-600 text-slate-300 font-bold text-sm"
+                                            >
+                                                破棄
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={saveMeal}
+                                                disabled={analyzing}
+                                                className="flex-1 py-3 rounded-2xl bg-gradient-to-r from-cyan-500 to-teal-500 text-slate-950 font-black text-sm disabled:opacity-50"
+                                            >
+                                                記録に保存
+                                            </button>
+                                        </div>
+                                    </>
+                                )}
+                                {!previewResult && !analyzing && (
+                                    <button
+                                        type="button"
+                                        onClick={() => fileInputRef.current?.click()}
+                                        className="w-full py-3 rounded-2xl border border-cyan-500/40 text-cyan-300 font-bold text-sm"
+                                    >
+                                        別の写真を選ぶ
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    {profileOpen && (
+                        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+                            <div className="w-full max-w-md glass-card rounded-3xl p-6 animate-fadeIn border-cyan-500/20">
+                                <h2 className="text-lg font-black text-white mb-1">プロフィール編集</h2>
+                                <p className="text-xs text-slate-500 mb-4">目標体重を設定すると、カロリー目安と AI コメントが調整されます。</p>
+                                <form onSubmit={saveProfileEdit} className="space-y-3">
+                                    <div>
+                                        <label className="text-xs text-slate-500 font-bold">ニックネーム</label>
+                                        <input
+                                            className="mt-1 w-full bg-slate-800/80 border border-slate-600/50 rounded-2xl px-4 py-3 text-white outline-none focus:border-cyan-500/60"
+                                            value={editName}
+                                            onChange={(e) => setEditName(e.target.value)}
+                                            required
+                                        />
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-3">
+                                        <div>
+                                            <label className="text-xs text-slate-500 font-bold">体重 (kg)</label>
+                                            <input
+                                                type="number"
+                                                step="0.1"
+                                                className="mt-1 w-full bg-slate-800/80 border border-slate-600/50 rounded-2xl px-4 py-3 text-white outline-none focus:border-cyan-500/60"
+                                                value={editWeight}
+                                                onChange={(e) => setEditWeight(e.target.value)}
+                                                required
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="text-xs text-slate-500 font-bold">目標 (kg)</label>
+                                            <input
+                                                type="number"
+                                                step="0.1"
+                                                className="mt-1 w-full bg-slate-800/80 border border-slate-600/50 rounded-2xl px-4 py-3 text-white outline-none focus:border-cyan-500/60"
+                                                value={editGoal}
+                                                onChange={(e) => setEditGoal(e.target.value)}
+                                                required
+                                            />
+                                        </div>
+                                    </div>
+                                    <div className="flex gap-2 pt-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => setProfileOpen(false)}
+                                            className="flex-1 py-3 rounded-2xl border border-slate-600 text-slate-300 font-bold text-sm"
+                                        >
+                                            閉じる
+                                        </button>
+                                        <button
+                                            type="submit"
+                                            className="flex-1 py-3 rounded-2xl bg-gradient-to-r from-cyan-500 to-teal-500 text-slate-950 font-black text-sm"
+                                        >
+                                            保存
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
