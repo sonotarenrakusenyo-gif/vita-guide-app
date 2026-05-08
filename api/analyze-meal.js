@@ -5,6 +5,27 @@ const GEMINI_MODEL_FALLBACKS = [
   "gemini-1.5-flash-8b",
 ];
 
+function emptyAnalysis(mealComment) {
+  return {
+    menu: ["判定中"],
+    calories_kcal: 0,
+    protein_g: 0,
+    fat_g: 0,
+    carbs_g: 0,
+    vitamins: {
+      A_ug_RAE: 0, B1_mg: 0, B2_mg: 0, B6_mg: 0, B12_ug: 0,
+      C_mg: 0, D_ug: 0, E_mg: 0, folate_ug: 0, niacin_mg: 0
+    },
+    minerals: {
+      calcium_mg: 0, iron_mg: 0, zinc_mg: 0, magnesium_mg: 0, potassium_mg: 0
+    },
+    vitamin_insights: [],
+    mineral_insights: [],
+    goal_advice: "",
+    meal_comment: mealComment || "AI出力の整形に失敗したため、再解析をおすすめします。"
+  };
+}
+
 function parseGeminiJson(text) {
   let t = String(text || "").trim();
   const fence = /^```(?:json)?\s*([\s\S]*?)```$/im.exec(t);
@@ -177,8 +198,9 @@ export default async function handler(req, res) {
               console.info("Gemini JSON repair succeeded");
               analysis = repaired;
             } else {
-              return res.status(502).json({
-                error: "解析結果のJSON形式が不正です。再試行してください（混雑時に一時的に発生することがあります）。"
+              console.error("Gemini JSON repair failed; returning safe fallback object");
+              return res.status(200).json({
+                analysis: emptyAnalysis("解析結果のJSONが不正だったため暫定表示です。もう一度お試しください。")
               });
             }
           }
