@@ -41,15 +41,6 @@
         const auth = firebase.auth();
         const db = firebase.firestore();
         const storage = firebase.storage();
-        const geminiApiKey = "AIzaSyDvftRYvUu1o9lsck4iAmEpUJWRVK8D5zc";
-
-        /** 1.5 の短いモデル名は API で 404 になることがあるため、新しい順に試す */
-        const GEMINI_MODEL_FALLBACKS = [
-            "gemini-2.5-flash",
-            "gemini-2.5-flash-lite",
-            "gemini-2.0-flash",
-            "gemini-1.5-flash-8b",
-        ];
 
         /** 成人向け目安（1日）— ダッシュボードの過不足表示用（おおよその目安） */
         const VITAMIN_RDA = {
@@ -64,19 +55,15 @@
             folate_ug: { label: "葉酸", unit: "µg", rda: 240 },
             niacin_mg: { label: "ナイアシン", unit: "mg", rda: 13 },
         };
+        const MINERAL_RDA = {
+            calcium_mg: { label: "カルシウム", unit: "mg", rda: 650 },
+            iron_mg: { label: "鉄", unit: "mg", rda: 7.5 },
+            zinc_mg: { label: "亜鉛", unit: "mg", rda: 9 },
+            magnesium_mg: { label: "マグネシウム", unit: "mg", rda: 340 },
+            potassium_mg: { label: "カリウム", unit: "mg", rda: 2500 },
+        };
 
-        function parseGeminiJson(text) {
-            let t = text.trim();
-            const fence = /^```(?:json)?\s*([\s\S]*?)```$/m.exec(t);
-            if (fence) t = fence[1].trim();
-            return JSON.parse(t);
-        }
-
-        function sleep(ms) {
-            return new Promise((resolve) => setTimeout(resolve, ms));
-        }
-
-        /** 503 / 429 は一時的な混雑・枠の問題が多いのでリトライし、ダメなら次モデルへ */
+        /** APIキーはVercelサーバー側で保持し、クライアントからは直接送らない */
         async function analyzeMealWithGemini(base64Image, mimeType, profile) {
             const prompt = `あなたは日本語で答えるプロの管理栄養士です。添付の食事写真を解析し、次のJSONだけを返してください（説明文やマークダウン禁止）。
 
@@ -104,91 +91,42 @@ JSONスキーマ:
     "folate_ug": number,
     "niacin_mg": number
   },
+  "minerals": {
+    "calcium_mg": number,
+    "iron_mg": number,
+    "zinc_mg": number,
+    "magnesium_mg": number,
+    "potassium_mg": number
+  },
   "vitamin_insights": [
     { "key": "C_mg", "status": "不足|適量|過多の可能性", "note": "短い解説", "food_sources": ["補える食材1","食材2"] }
+  ],
+  "mineral_insights": [
+    { "key": "iron_mg", "status": "不足|適量|過多の可能性", "note": "短い解説", "food_sources": ["補える食材1","食材2"] }
   ],
   "goal_advice": "目標体重に向けた一言アドバイス（任意）",
   "meal_comment": "この食事全体のコメント（短く）"
 }
 
-ビタミンは写真から妥当に推定し、不明な場合は低めに推定して vitamin_insights で触れてください。`;
+ビタミン・ミネラルは写真から妥当に推定し、不明な場合は低めに推定して insights で触れてください。`;
 
-            const body = JSON.stringify({
-                contents: [{
-                    parts: [
-                        { text: prompt },
-                        { inline_data: { mime_type: mimeType, data: base64Image } }
-                    ]
-                }],
-                generationConfig: {
-                    temperature: 0.2,
-                    maxOutputTokens: 2048,
-                    responseMimeType: "application/json"
-                }
+            const res = await fetch("/api/analyze-meal", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    base64Image,
+                    mimeType,
+                    prompt
+                })
             });
-
-            const maxAttemptsPerModel = 4;
-            let last404Body = "";
-            let lastOverloadBody = "";
-
-            for (const model of GEMINI_MODEL_FALLBACKS) {
-                const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(geminiApiKey)}`;
-
-                for (let attempt = 0; attempt < maxAttemptsPerModel; attempt++) {
-                    if (attempt > 0) {
-                        const waitMs = Math.min(12000, 2000 * Math.pow(2, attempt - 1));
-                        await sleep(waitMs);
-                    }
-
-                    const res = await fetch(url, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body
-                    });
-                    const responseText = await res.text();
-
-                    if (res.ok) {
-                        let data;
-                        try {
-                            data = JSON.parse(responseText);
-                        } catch {
-                            throw new Error("Gemini API: 応答の解析に失敗しました");
-                        }
-                        const part = data?.candidates?.[0]?.content?.parts?.[0];
-                        const raw = part?.text;
-                        if (!raw) throw new Error("解析結果が空です");
-                        return parseGeminiJson(raw);
-                    }
-
-                    if (res.status === 404) {
-                        last404Body = responseText;
-                        break;
-                    }
-
-                    if (res.status === 503 || res.status === 429) {
-                        lastOverloadBody = responseText;
-                        if (attempt === maxAttemptsPerModel - 1) {
-                            break;
-                        }
-                        continue;
-                    }
-
-                    throw new Error(`Gemini API: ${res.status} ${responseText}`);
-                }
+            const body = await res.json().catch(() => null);
+            if (!res.ok) {
+                throw new Error(body?.error || "解析に失敗しました");
             }
-
-            if (lastOverloadBody) {
-                throw new Error(
-                    "Gemini API が混雑中（503）か利用枠に達しています（429）。数分後にもう一度お試しください。 " +
-                    lastOverloadBody
-                );
+            if (!body?.analysis) {
+                throw new Error("解析結果が空です");
             }
-
-            throw new Error(
-                "Gemini API: 利用可能なモデルが見つかりません（404）。 " +
-                "AI Studio でモデル一覧を確認し、GEMINI_MODEL_FALLBACKS を編集してください。 " +
-                last404Body
-            );
+            return body.analysis;
         }
 
         function startOfToday() {
@@ -209,6 +147,31 @@ JSONスキーマ:
                 });
             });
             return sum;
+        }
+        function sumMineralsFromMeals(meals) {
+            const keys = Object.keys(MINERAL_RDA);
+            const sum = {};
+            keys.forEach((k) => { sum[k] = 0; });
+            meals.forEach((m) => {
+                const minerals = m.minerals || {};
+                keys.forEach((k) => {
+                    const n = Number(minerals[k]);
+                    if (!Number.isNaN(n)) sum[k] += n;
+                });
+            });
+            return sum;
+        }
+        function micronutrientScore(totalMap, referenceMap) {
+            const keys = Object.keys(referenceMap);
+            if (!keys.length) return 0;
+            let sumPct = 0;
+            keys.forEach((k) => {
+                const amount = Number(totalMap?.[k]) || 0;
+                const rda = referenceMap[k].rda || 1;
+                const pct = Math.max(0, Math.min(100, (amount / rda) * 100));
+                sumPct += pct;
+            });
+            return Math.round(sumPct / keys.length);
         }
 
         function pfcFromMeals(meals) {
@@ -435,6 +398,50 @@ JSONスキーマ:
                 </div>
             );
         }
+        function MineralGrid({ minerals, insights, title }) {
+            const keys = Object.keys(MINERAL_RDA);
+            return (
+                <div className="space-y-3">
+                    {title && <p className="text-xs font-bold text-slate-400">{title}</p>}
+                    <div className="grid gap-2">
+                        {keys.map((key) => {
+                            const meta = MINERAL_RDA[key];
+                            const amount = Number(minerals?.[key]) || 0;
+                            const pct = Math.min(200, Math.round((amount / meta.rda) * 100));
+                            let barColor = "bg-emerald-500";
+                            if (pct < 50) barColor = "bg-rose-500";
+                            else if (pct < 100) barColor = "bg-amber-400";
+                            else if (pct > 150) barColor = "bg-orange-400";
+                            const insight = (insights || []).find((i) => i.key === key);
+                            return (
+                                <div key={key} className="bg-slate-800/60 rounded-2xl p-3 border border-slate-700/50">
+                                    <div className="flex justify-between items-baseline gap-2">
+                                        <span className="text-sm font-bold text-slate-200">{meta.label}</span>
+                                        <span className="text-xs text-slate-400">
+                                            {amount.toFixed(1)}{meta.unit}
+                                            <span className="text-slate-500"> / 目安 {meta.rda}{meta.unit}</span>
+                                        </span>
+                                    </div>
+                                    <div className="mt-2 h-2 rounded-full bg-slate-900 overflow-hidden">
+                                        <div className={`h-full rounded-full ${barColor}`} style={{ width: `${Math.min(100, pct)}%` }} />
+                                    </div>
+                                    <p className="text-[10px] text-slate-500 mt-1">摂取目安に対し 約{pct}%</p>
+                                    {insight && (
+                                        <div className="mt-2 text-xs text-slate-300 border-t border-slate-700/50 pt-2">
+                                            <span className="text-cyan-400/90 font-bold">{insight.status}</span>
+                                            {insight.note && <span className="text-slate-400"> — {insight.note}</span>}
+                                            {insight.food_sources?.length > 0 && (
+                                                <p className="text-slate-500 mt-1">補える食材: {insight.food_sources.join("、")}</p>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            );
+        }
 
         function Dashboard({ user, profile, setProfile }) {
             const [meals, setMeals] = React.useState([]);
@@ -449,13 +456,17 @@ JSONスキーマ:
             const [previewResult, setPreviewResult] = React.useState(null);
             const [previewFile, setPreviewFile] = React.useState(null);
             const [previewUrl, setPreviewUrl] = React.useState(null);
-            const fileInputRef = React.useRef(null);
+            const cameraInputRef = React.useRef(null);
+            const galleryInputRef = React.useRef(null);
 
             const dailyTarget = suggestedDailyCalories(profile);
             const todayKcal = meals.reduce((s, m) => s + (Number(m.calories_kcal) || 0), 0);
             const remaining = Math.max(0, dailyTarget - todayKcal);
             const pfc = pfcFromMeals(meals);
             const vitSum = sumVitaminsFromMeals(meals);
+            const mineralSum = sumMineralsFromMeals(meals);
+            const vitaminScore = micronutrientScore(vitSum, VITAMIN_RDA);
+            const mineralScore = micronutrientScore(mineralSum, MINERAL_RDA);
 
             const loadMeals = React.useCallback(async () => {
                 if (!user?.uid) return;
@@ -507,8 +518,10 @@ JSONスキーマ:
                 setPreviewUrl(null);
                 setPreviewFile(null);
                 setSheetOpen(true);
-                setTimeout(() => fileInputRef.current?.click(), 50);
             };
+
+            const chooseFromCamera = () => cameraInputRef.current?.click();
+            const chooseFromGallery = () => galleryInputRef.current?.click();
 
             const onFileChange = async (e) => {
                 const file = e.target.files?.[0];
@@ -559,7 +572,9 @@ JSONスキーマ:
                         fat_g: previewResult.fat_g,
                         carbs_g: previewResult.carbs_g,
                         vitamins: previewResult.vitamins || {},
+                        minerals: previewResult.minerals || {},
                         vitamin_insights: previewResult.vitamin_insights || [],
+                        mineral_insights: previewResult.mineral_insights || [],
                         meal_comment: previewResult.meal_comment || "",
                         goal_advice: previewResult.goal_advice || ""
                     });
@@ -587,10 +602,17 @@ JSONスキーマ:
             return (
                 <div className="max-w-lg mx-auto min-h-screen pb-36 px-4 pt-6 bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950">
                     <input
-                        ref={fileInputRef}
+                        ref={cameraInputRef}
                         type="file"
                         accept="image/*"
                         capture="environment"
+                        className="hidden"
+                        onChange={onFileChange}
+                    />
+                    <input
+                        ref={galleryInputRef}
+                        type="file"
+                        accept="image/*"
                         className="hidden"
                         onChange={onFileChange}
                     />
@@ -641,6 +663,36 @@ JSONスキーマ:
                     </div>
 
                     <div className="glass-card rounded-3xl p-5 mb-4">
+                        <h2 className="text-sm font-black text-white mb-3">五大栄養素バランス（今日）</h2>
+                        <div className="grid grid-cols-2 gap-2 text-xs mb-3">
+                            <div className="rounded-2xl p-3 bg-slate-800/60 border border-slate-700/50">
+                                <p className="text-slate-500">タンパク質</p>
+                                <p className="text-cyan-300 font-bold">{pfc.protein_g.toFixed(1)} g</p>
+                            </div>
+                            <div className="rounded-2xl p-3 bg-slate-800/60 border border-slate-700/50">
+                                <p className="text-slate-500">脂質</p>
+                                <p className="text-amber-300 font-bold">{pfc.fat_g.toFixed(1)} g</p>
+                            </div>
+                            <div className="rounded-2xl p-3 bg-slate-800/60 border border-slate-700/50">
+                                <p className="text-slate-500">炭水化物</p>
+                                <p className="text-violet-300 font-bold">{pfc.carbs_g.toFixed(1)} g</p>
+                            </div>
+                            <div className="rounded-2xl p-3 bg-slate-800/60 border border-slate-700/50">
+                                <p className="text-slate-500">合計カロリー</p>
+                                <p className="text-emerald-300 font-bold">{Math.round(todayKcal)} kcal</p>
+                            </div>
+                            <div className="rounded-2xl p-3 bg-slate-800/60 border border-slate-700/50">
+                                <p className="text-slate-500">ビタミン達成度</p>
+                                <p className="text-fuchsia-300 font-bold">{vitaminScore}%</p>
+                            </div>
+                            <div className="rounded-2xl p-3 bg-slate-800/60 border border-slate-700/50">
+                                <p className="text-slate-500">ミネラル達成度</p>
+                                <p className="text-teal-300 font-bold">{mineralScore}%</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="glass-card rounded-3xl p-5 mb-4">
                         <h2 className="text-sm font-black text-white mb-3 flex items-center gap-2">
                             <span className="w-2 h-2 rounded-full bg-cyan-400 shadow-[0_0_8px_#22d3ee]" />
                             今日のビタミン（推定・合計）
@@ -651,6 +703,19 @@ JSONスキーマ:
                             <p className="text-slate-500 text-sm">食事を記録すると、ここに1日の推定合計が表示されます。</p>
                         ) : (
                             <VitaminGrid vitamins={vitSum} insights={null} />
+                        )}
+                    </div>
+                    <div className="glass-card rounded-3xl p-5 mb-4">
+                        <h2 className="text-sm font-black text-white mb-3 flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full bg-teal-300 shadow-[0_0_8px_#5eead4]" />
+                            今日のミネラル（推定・合計）
+                        </h2>
+                        {loadingMeals ? (
+                            <p className="text-slate-500 text-sm">読み込み中…</p>
+                        ) : meals.length === 0 ? (
+                            <p className="text-slate-500 text-sm">食事を記録すると、ここに1日の推定合計が表示されます。</p>
+                        ) : (
+                            <MineralGrid minerals={mineralSum} insights={null} />
                         )}
                     </div>
 
@@ -732,6 +797,53 @@ JSONスキーマ:
                                         </div>
                                         <div className="mb-4 p-3 rounded-2xl bg-slate-800/50 border border-slate-700/50">
                                             <PfcBars {...pfcPercents(previewResult.protein_g, previewResult.fat_g, previewResult.carbs_g)} />
+                                            <div className="grid grid-cols-2 gap-2 mt-3 text-xs">
+                                                <div className="rounded-xl bg-slate-900/70 p-2 border border-slate-700/50">
+                                                    <p className="text-slate-500">タンパク質</p>
+                                                    <p className="text-cyan-300 font-bold">{Number(previewResult.protein_g || 0).toFixed(1)} g</p>
+                                                </div>
+                                                <div className="rounded-xl bg-slate-900/70 p-2 border border-slate-700/50">
+                                                    <p className="text-slate-500">脂質</p>
+                                                    <p className="text-amber-300 font-bold">{Number(previewResult.fat_g || 0).toFixed(1)} g</p>
+                                                </div>
+                                                <div className="rounded-xl bg-slate-900/70 p-2 border border-slate-700/50">
+                                                    <p className="text-slate-500">炭水化物</p>
+                                                    <p className="text-violet-300 font-bold">{Number(previewResult.carbs_g || 0).toFixed(1)} g</p>
+                                                </div>
+                                                <div className="rounded-xl bg-slate-900/70 p-2 border border-slate-700/50">
+                                                    <p className="text-slate-500">合計カロリー</p>
+                                                    <p className="text-emerald-300 font-bold">{Math.round(Number(previewResult.calories_kcal || 0))} kcal</p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div className="mb-4 p-3 rounded-2xl bg-slate-800/50 border border-slate-700/50">
+                                            <p className="text-xs font-bold text-slate-400 mb-2">五大栄養素（この食事）</p>
+                                            <div className="grid grid-cols-2 gap-2 text-xs">
+                                                <div className="rounded-xl bg-slate-900/70 p-2 border border-slate-700/50">
+                                                    <p className="text-slate-500">タンパク質</p>
+                                                    <p className="text-cyan-300 font-bold">{Number(previewResult.protein_g || 0).toFixed(1)} g</p>
+                                                </div>
+                                                <div className="rounded-xl bg-slate-900/70 p-2 border border-slate-700/50">
+                                                    <p className="text-slate-500">脂質</p>
+                                                    <p className="text-amber-300 font-bold">{Number(previewResult.fat_g || 0).toFixed(1)} g</p>
+                                                </div>
+                                                <div className="rounded-xl bg-slate-900/70 p-2 border border-slate-700/50">
+                                                    <p className="text-slate-500">炭水化物</p>
+                                                    <p className="text-violet-300 font-bold">{Number(previewResult.carbs_g || 0).toFixed(1)} g</p>
+                                                </div>
+                                                <div className="rounded-xl bg-slate-900/70 p-2 border border-slate-700/50">
+                                                    <p className="text-slate-500">合計カロリー</p>
+                                                    <p className="text-emerald-300 font-bold">{Math.round(Number(previewResult.calories_kcal || 0))} kcal</p>
+                                                </div>
+                                                <div className="rounded-xl bg-slate-900/70 p-2 border border-slate-700/50">
+                                                    <p className="text-slate-500">ビタミン（総合）</p>
+                                                    <p className="text-fuchsia-300 font-bold">{micronutrientScore(previewResult.vitamins || {}, VITAMIN_RDA)}%</p>
+                                                </div>
+                                                <div className="rounded-xl bg-slate-900/70 p-2 border border-slate-700/50">
+                                                    <p className="text-slate-500">ミネラル（総合）</p>
+                                                    <p className="text-teal-300 font-bold">{micronutrientScore(previewResult.minerals || {}, MINERAL_RDA)}%</p>
+                                                </div>
+                                            </div>
                                         </div>
                                         {(previewResult.meal_comment || previewResult.goal_advice) && (
                                             <div className="mb-4 text-sm text-slate-300 space-y-2">
@@ -750,6 +862,15 @@ JSONスキーマ:
                                             <VitaminGrid
                                                 vitamins={previewResult.vitamins}
                                                 insights={previewResult.vitamin_insights}
+                                            />
+                                        </div>
+                                        <div className="mb-6">
+                                            <h3 className="text-sm font-black text-white mb-2 flex items-center gap-2">
+                                                ミネラル詳細（この食事）
+                                            </h3>
+                                            <MineralGrid
+                                                minerals={previewResult.minerals}
+                                                insights={previewResult.mineral_insights}
                                             />
                                         </div>
                                         <div className="flex gap-2">
@@ -772,13 +893,22 @@ JSONスキーマ:
                                     </>
                                 )}
                                 {!previewResult && !analyzing && (
-                                    <button
-                                        type="button"
-                                        onClick={() => fileInputRef.current?.click()}
-                                        className="w-full py-3 rounded-2xl border border-cyan-500/40 text-cyan-300 font-bold text-sm"
-                                    >
-                                        別の写真を選ぶ
-                                    </button>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={chooseFromCamera}
+                                            className="w-full py-3 rounded-2xl border border-cyan-500/40 text-cyan-300 font-bold text-sm"
+                                        >
+                                            カメラで撮影
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={chooseFromGallery}
+                                            className="w-full py-3 rounded-2xl border border-teal-500/40 text-teal-300 font-bold text-sm"
+                                        >
+                                            アルバムから選択
+                                        </button>
+                                    </div>
                                 )}
                             </div>
                         </div>
