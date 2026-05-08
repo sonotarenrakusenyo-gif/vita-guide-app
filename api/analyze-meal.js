@@ -294,7 +294,14 @@ export default async function handler(req, res) {
           if (micronutrientsAllZero(normalized)) {
             const enriched = await enrichMicronutrients(apiKey, normalized);
             if (enriched) {
-              normalized = { ...normalized, ...enriched };
+              // 補完側は微量栄養素のみ反映し、PFCやカロリーを上書きしない
+              normalized = {
+                ...normalized,
+                vitamins: enriched.vitamins || normalized.vitamins,
+                minerals: enriched.minerals || normalized.minerals,
+                vitamin_insights: Array.isArray(enriched.vitamin_insights) ? enriched.vitamin_insights : normalized.vitamin_insights,
+                mineral_insights: Array.isArray(enriched.mineral_insights) ? enriched.mineral_insights : normalized.mineral_insights,
+              };
             }
           }
           return res.status(200).json({ analysis: normalized });

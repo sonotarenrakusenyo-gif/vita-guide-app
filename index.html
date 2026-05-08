@@ -586,9 +586,15 @@ JSONスキーマ:
                 try {
                     const mealId = db.collection("users").doc(user.uid).collection("meals").doc().id;
                     const path = `users/${user.uid}/meals/${mealId}.jpg`;
-                    const ref = storage.ref(path);
-                    await ref.put(previewFile);
-                    const imageUrl = await ref.getDownloadURL();
+                    let imageUrl = "";
+                    try {
+                        const ref = storage.ref(path);
+                        await ref.put(previewFile);
+                        imageUrl = await ref.getDownloadURL();
+                    } catch (storageErr) {
+                        // 画像アップロード失敗でも食事データは保存して履歴に残す
+                        console.error(storageErr);
+                    }
                     await db.collection("users").doc(user.uid).collection("meals").doc(mealId).set({
                         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
                         createdAtClient: new Date().toISOString(),
@@ -628,6 +634,9 @@ JSONスキーマ:
                         goal_advice: previewResult.goal_advice || ""
                     }, ...prev]);
                     await loadMeals();
+                    if (!imageUrl) {
+                        setError("画像アップロードに失敗したため、テキストデータのみ保存しました。");
+                    }
                 } catch (err) {
                     console.error(err);
                     setError("保存に失敗しました（Storage / Firestore の権限を確認してください）");
