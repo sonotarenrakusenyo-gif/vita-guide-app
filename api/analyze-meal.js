@@ -26,6 +26,42 @@ function emptyAnalysis(mealComment) {
   };
 }
 
+function toNumberOrZero(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function normalizeAnalysis(input) {
+  const base = emptyAnalysis("");
+  const src = input && typeof input === "object" ? input : {};
+  const menu = Array.isArray(src.menu) && src.menu.length > 0 ? src.menu.map((x) => String(x)) : base.menu;
+
+  const vitamins = { ...base.vitamins };
+  Object.keys(vitamins).forEach((k) => {
+    vitamins[k] = toNumberOrZero(src?.vitamins?.[k]);
+  });
+
+  const minerals = { ...base.minerals };
+  Object.keys(minerals).forEach((k) => {
+    minerals[k] = toNumberOrZero(src?.minerals?.[k]);
+  });
+
+  const normalized = {
+    menu,
+    calories_kcal: toNumberOrZero(src.calories_kcal),
+    protein_g: toNumberOrZero(src.protein_g),
+    fat_g: toNumberOrZero(src.fat_g),
+    carbs_g: toNumberOrZero(src.carbs_g),
+    vitamins,
+    minerals,
+    vitamin_insights: Array.isArray(src.vitamin_insights) ? src.vitamin_insights : [],
+    mineral_insights: Array.isArray(src.mineral_insights) ? src.mineral_insights : [],
+    goal_advice: typeof src.goal_advice === "string" ? src.goal_advice : "",
+    meal_comment: typeof src.meal_comment === "string" ? src.meal_comment : ""
+  };
+  return normalized;
+}
+
 function parseGeminiJson(text) {
   let t = String(text || "").trim();
   const fence = /^```(?:json)?\s*([\s\S]*?)```$/im.exec(t);
@@ -204,7 +240,7 @@ export default async function handler(req, res) {
               });
             }
           }
-          return res.status(200).json({ analysis });
+          return res.status(200).json({ analysis: normalizeAnalysis(analysis) });
         }
 
         if (r.status === 404) {

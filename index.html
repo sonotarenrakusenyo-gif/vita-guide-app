@@ -343,7 +343,7 @@ JSONスキーマ:
         function PfcBars({ pPct, fPct, cPct }) {
             return (
                 <div className="space-y-2">
-                    <p className="text-xs font-bold text-slate-400">PFC バランス（推定エネルギー比）</p>
+                    <p className="text-xs font-bold text-slate-400">PFCバランス（P=タンパク質 / F=脂質 / C=炭水化物）</p>
                     <div className="flex h-3 rounded-full overflow-hidden bg-slate-800">
                         <div className="bg-cyan-500" style={{ width: `${pPct}%` }} title={`P ${pPct}%`} />
                         <div className="bg-amber-400" style={{ width: `${fPct}%` }} title={`F ${fPct}%`} />
