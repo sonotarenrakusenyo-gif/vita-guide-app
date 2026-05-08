@@ -7,8 +7,16 @@ const GEMINI_MODEL_FALLBACKS = [
 
 function parseGeminiJson(text) {
   let t = String(text || "").trim();
-  const fence = /^```(?:json)?\s*([\s\S]*?)```$/m.exec(t);
+  const fence = /^```(?:json)?\s*([\s\S]*?)```$/im.exec(t);
   if (fence) t = fence[1].trim();
+  t = t.replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
+
+  // 余計な前置き/後置き文があっても最初のJSONオブジェクトを抽出する
+  const firstBrace = t.indexOf("{");
+  const lastBrace = t.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    t = t.slice(firstBrace, lastBrace + 1);
+  }
   return JSON.parse(t);
 }
 
@@ -67,12 +75,24 @@ export default async function handler(req, res) {
         const text = await r.text();
 
         if (r.ok) {
-          const data = JSON.parse(text);
+          let data;
+          try {
+            data = JSON.parse(text);
+          } catch (e) {
+            console.error("Gemini API response JSON.parse failed", { message: e?.message, textSnippet: text?.slice(0, 400) });
+            return res.status(502).json({ error: "Gemini APIの応答形式が不正です（レスポンスJSONの解析失敗）" });
+          }
           const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text;
           if (!raw) {
             return res.status(502).json({ error: "Gemini応答が空です" });
           }
-          const analysis = parseGeminiJson(raw);
+          let analysis;
+          try {
+            analysis = parseGeminiJson(raw);
+          } catch (e) {
+            console.error("Gemini content JSON.parse failed", { message: e?.message, rawSnippet: String(raw).slice(0, 600) });
+            return res.status(502).json({ error: "解析結果のJSON形式が不正です。もう一度お試しください。" });
+          }
           return res.status(200).json({ analysis });
         }
 
@@ -101,6 +121,7 @@ export default async function handler(req, res) {
       error: "利用可能なGeminiモデルが見つかりません。Vercel環境変数とモデル設定を確認してください。"
     });
   } catch (e) {
+    console.error("analyze-meal handler error", e);
     return res.status(500).json({ error: e?.message || "サーバーエラー" });
   }
 }
