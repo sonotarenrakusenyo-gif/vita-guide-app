@@ -63,6 +63,48 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function repairJsonWithGemini(apiKey, brokenText) {
+  const repairModel = "gemini-2.5-flash-lite";
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${repairModel}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const repairPrompt = [
+    "次のテキストを、内容を変えずに有効なJSONオブジェクト1つへ修復してください。",
+    "出力はJSONのみ。説明文、Markdown、コードブロックは禁止。",
+    "末尾カンマ、クォート欠落、改行崩れを補正してください。",
+    "",
+    brokenText
+  ].join("\n");
+
+  const body = JSON.stringify({
+    contents: [{ parts: [{ text: repairPrompt }] }],
+    generationConfig: {
+      temperature: 0,
+      maxOutputTokens: 2048,
+      responseMimeType: "application/json"
+    }
+  });
+
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body
+  });
+  if (!r.ok) return null;
+  const text = await r.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!raw) return null;
+  try {
+    return parseGeminiJson(raw);
+  } catch {
+    return null;
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -130,9 +172,15 @@ export default async function handler(req, res) {
             analysis = parseGeminiJson(raw);
           } catch (e) {
             console.error("Gemini content JSON.parse failed", { message: e?.message, rawSnippet: String(raw).slice(0, 1200) });
-            return res.status(502).json({
-              error: "解析結果のJSON形式が不正です。再試行してください（混雑時に一時的に発生することがあります）。"
-            });
+            const repaired = await repairJsonWithGemini(apiKey, String(raw));
+            if (repaired) {
+              console.info("Gemini JSON repair succeeded");
+              analysis = repaired;
+            } else {
+              return res.status(502).json({
+                error: "解析結果のJSON形式が不正です。再試行してください（混雑時に一時的に発生することがあります）。"
+              });
+            }
           }
           return res.status(200).json({ analysis });
         }
