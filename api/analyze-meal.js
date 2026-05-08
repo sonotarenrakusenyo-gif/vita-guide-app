@@ -11,13 +11,52 @@ function parseGeminiJson(text) {
   if (fence) t = fence[1].trim();
   t = t.replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
 
-  // 余計な前置き/後置き文があっても最初のJSONオブジェクトを抽出する
-  const firstBrace = t.indexOf("{");
-  const lastBrace = t.lastIndexOf("}");
-  if (firstBrace >= 0 && lastBrace > firstBrace) {
-    t = t.slice(firstBrace, lastBrace + 1);
+  // 余計な前置き/後置き文があってもJSONオブジェクト本体を抽出する
+  const extractObject = (src) => {
+    let start = -1;
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    for (let i = 0; i < src.length; i++) {
+      const ch = src[i];
+      if (inString) {
+        if (escape) {
+          escape = false;
+        } else if (ch === "\\") {
+          escape = true;
+        } else if (ch === "\"") {
+          inString = false;
+        }
+        continue;
+      }
+      if (ch === "\"") {
+        inString = true;
+        continue;
+      }
+      if (ch === "{") {
+        if (depth === 0) start = i;
+        depth++;
+      } else if (ch === "}") {
+        if (depth > 0) depth--;
+        if (depth === 0 && start >= 0) return src.slice(start, i + 1);
+      }
+    }
+    return src;
+  };
+
+  const candidates = [];
+  candidates.push(t);
+  candidates.push(extractObject(t));
+  candidates.push(extractObject(t).replace(/,\s*([}\]])/g, "$1"));
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // next
+    }
   }
-  return JSON.parse(t);
+  throw new Error("JSON_PARSE_FAILED");
 }
 
 function sleep(ms) {
@@ -90,8 +129,10 @@ export default async function handler(req, res) {
           try {
             analysis = parseGeminiJson(raw);
           } catch (e) {
-            console.error("Gemini content JSON.parse failed", { message: e?.message, rawSnippet: String(raw).slice(0, 600) });
-            return res.status(502).json({ error: "解析結果のJSON形式が不正です。もう一度お試しください。" });
+            console.error("Gemini content JSON.parse failed", { message: e?.message, rawSnippet: String(raw).slice(0, 1200) });
+            return res.status(502).json({
+              error: "解析結果のJSON形式が不正です。再試行してください（混雑時に一時的に発生することがあります）。"
+            });
           }
           return res.status(200).json({ analysis });
         }
