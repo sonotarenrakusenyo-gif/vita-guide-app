@@ -450,7 +450,7 @@ JSONスキーマ:
         }
 
         function Dashboard({ user, profile, setProfile }) {
-            const [meals, setMeals] = React.useState([]);
+            const [mealLogs, setMealLogs] = React.useState([]);
             const [loadingMeals, setLoadingMeals] = React.useState(true);
             const [sheetOpen, setSheetOpen] = React.useState(false);
             const [profileOpen, setProfileOpen] = React.useState(false);
@@ -466,28 +466,48 @@ JSONスキーマ:
             const galleryInputRef = React.useRef(null);
 
             const dailyTarget = suggestedDailyCalories(profile);
-            const todayKcal = meals.reduce((s, m) => s + (Number(m.calories_kcal) || 0), 0);
+            const mealsToday = React.useMemo(() => {
+                const start = startOfToday().getTime();
+                return mealLogs.filter((m) => {
+                    const d = m.createdAt?.toDate ? m.createdAt.toDate() : (m.createdAt ? new Date(m.createdAt) : null);
+                    const clientD = m.createdAtClient ? new Date(m.createdAtClient) : null;
+                    const t = d?.getTime?.() || clientD?.getTime?.() || 0;
+                    return t >= start;
+                });
+            }, [mealLogs]);
+            const todayKcal = mealsToday.reduce((s, m) => s + (Number(m.calories_kcal) || 0), 0);
             const remaining = Math.max(0, dailyTarget - todayKcal);
-            const pfc = pfcFromMeals(meals);
-            const vitSum = sumVitaminsFromMeals(meals);
-            const mineralSum = sumMineralsFromMeals(meals);
+            const pfc = pfcFromMeals(mealsToday);
+            const vitSum = sumVitaminsFromMeals(mealsToday);
+            const mineralSum = sumMineralsFromMeals(mealsToday);
             const vitaminScore = micronutrientScore(vitSum, VITAMIN_RDA);
             const mineralScore = micronutrientScore(mineralSum, MINERAL_RDA);
 
             const loadMeals = React.useCallback(async () => {
                 if (!user?.uid) return;
                 setLoadingMeals(true);
-                const t0 = firebase.firestore.Timestamp.fromDate(startOfToday());
                 try {
                     const snap = await db.collection("users").doc(user.uid).collection("meals")
-                        .where("createdAt", ">=", t0)
                         .orderBy("createdAt", "desc")
+                        .limit(200)
                         .get();
                     const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-                    setMeals(list);
+                    setMealLogs(list);
                 } catch (e) {
                     console.error(e);
-                    setError("食事ログの読み込みに失敗しました。Firestore のインデックスが必要な場合があります。");
+                    try {
+                        const snap = await db.collection("users").doc(user.uid).collection("meals").limit(200).get();
+                        const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+                        list.sort((a, b) => {
+                            const ad = a.createdAt?.toDate ? a.createdAt.toDate() : (a.createdAtClient ? new Date(a.createdAtClient) : new Date(0));
+                            const bd = b.createdAt?.toDate ? b.createdAt.toDate() : (b.createdAtClient ? new Date(b.createdAtClient) : new Date(0));
+                            return bd - ad;
+                        });
+                        setMealLogs(list);
+                    } catch (e2) {
+                        console.error(e2);
+                        setError("食事ログの読み込みに失敗しました。Firestore の権限または設定を確認してください。");
+                    }
                 }
                 setLoadingMeals(false);
             }, [user?.uid]);
@@ -571,6 +591,7 @@ JSONスキーマ:
                     const imageUrl = await ref.getDownloadURL();
                     await db.collection("users").doc(user.uid).collection("meals").doc(mealId).set({
                         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        createdAtClient: new Date().toISOString(),
                         imageUrl,
                         menu: previewResult.menu || [],
                         calories_kcal: previewResult.calories_kcal,
@@ -589,6 +610,23 @@ JSONスキーマ:
                     setPreviewFile(null);
                     setPreviewResult(null);
                     setSheetOpen(false);
+                    setMealLogs((prev) => [{
+                        id: mealId,
+                        createdAt: new Date(),
+                        createdAtClient: new Date().toISOString(),
+                        imageUrl,
+                        menu: previewResult.menu || [],
+                        calories_kcal: previewResult.calories_kcal,
+                        protein_g: previewResult.protein_g,
+                        fat_g: previewResult.fat_g,
+                        carbs_g: previewResult.carbs_g,
+                        vitamins: previewResult.vitamins || {},
+                        minerals: previewResult.minerals || {},
+                        vitamin_insights: previewResult.vitamin_insights || [],
+                        mineral_insights: previewResult.mineral_insights || [],
+                        meal_comment: previewResult.meal_comment || "",
+                        goal_advice: previewResult.goal_advice || ""
+                    }, ...prev]);
                     await loadMeals();
                 } catch (err) {
                     console.error(err);
@@ -658,7 +696,7 @@ JSONスキーマ:
                         <p className="text-sm text-cyan-300/90 mt-2 font-semibold">
                             残り約 {Math.round(remaining)} kcal（目安・活動量は個人差あり）
                         </p>
-                        {meals.length > 0 && (
+                        {mealsToday.length > 0 && (
                             <div className="mt-4 pt-4 border-t border-slate-700/50">
                                 <PfcBars pPct={pfc.pPct} fPct={pfc.fPct} cPct={pfc.cPct} />
                                 <p className="text-[10px] text-slate-500 mt-2">
@@ -705,7 +743,7 @@ JSONスキーマ:
                         </h2>
                         {loadingMeals ? (
                             <p className="text-slate-500 text-sm">読み込み中…</p>
-                        ) : meals.length === 0 ? (
+                        ) : mealsToday.length === 0 ? (
                             <p className="text-slate-500 text-sm">食事を記録すると、ここに1日の推定合計が表示されます。</p>
                         ) : (
                             <VitaminGrid vitamins={vitSum} insights={null} />
@@ -718,7 +756,7 @@ JSONスキーマ:
                         </h2>
                         {loadingMeals ? (
                             <p className="text-slate-500 text-sm">読み込み中…</p>
-                        ) : meals.length === 0 ? (
+                        ) : mealsToday.length === 0 ? (
                             <p className="text-slate-500 text-sm">食事を記録すると、ここに1日の推定合計が表示されます。</p>
                         ) : (
                             <MineralGrid minerals={mineralSum} insights={null} />
@@ -726,17 +764,17 @@ JSONスキーマ:
                     </div>
 
                     <div className="glass-card rounded-3xl p-5 mb-4">
-                        <h2 className="text-sm font-black text-white mb-3">食事ログ（今日）</h2>
+                        <h2 className="text-sm font-black text-white mb-3">食事ログ（履歴）</h2>
                         {error && !sheetOpen && (
                             <p className="text-rose-400 text-xs mb-2">{error}</p>
                         )}
                         {loadingMeals ? (
                             <p className="text-slate-500 text-sm">読み込み中…</p>
-                        ) : meals.length === 0 ? (
+                        ) : mealLogs.length === 0 ? (
                             <p className="text-slate-500 text-sm">まだ記録がありません。下のボタンで撮影してください。</p>
                         ) : (
                             <ul className="space-y-3">
-                                {meals.map((m) => (
+                                {mealLogs.map((m) => (
                                     <li key={m.id} className="flex gap-3 bg-slate-800/40 rounded-2xl p-3 border border-slate-700/40">
                                         {m.imageUrl ? (
                                             <img src={m.imageUrl} alt="" className="w-20 h-20 rounded-xl object-cover shrink-0" />

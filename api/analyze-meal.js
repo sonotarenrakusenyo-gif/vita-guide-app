@@ -62,6 +62,12 @@ function normalizeAnalysis(input) {
   return normalized;
 }
 
+function micronutrientsAllZero(a) {
+  const vSum = Object.values(a.vitamins || {}).reduce((s, n) => s + toNumberOrZero(n), 0);
+  const mSum = Object.values(a.minerals || {}).reduce((s, n) => s + toNumberOrZero(n), 0);
+  return vSum <= 0 && mSum <= 0;
+}
+
 function parseGeminiJson(text) {
   let t = String(text || "").trim();
   const fence = /^```(?:json)?\s*([\s\S]*?)```$/im.exec(t);
@@ -162,6 +168,50 @@ async function repairJsonWithGemini(apiKey, brokenText) {
   }
 }
 
+async function enrichMicronutrients(apiKey, analysis) {
+  const model = "gemini-2.5-flash-lite";
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const prompt = `以下の食事情報から、ビタミン・ミネラルだけを推定してJSONで返してください。説明文禁止。
+
+食事情報:
+${JSON.stringify({
+  menu: analysis.menu,
+  calories_kcal: analysis.calories_kcal,
+  protein_g: analysis.protein_g,
+  fat_g: analysis.fat_g,
+  carbs_g: analysis.carbs_g
+}, null, 2)}
+
+JSON:
+{
+  "vitamins": {"A_ug_RAE": number,"B1_mg": number,"B2_mg": number,"B6_mg": number,"B12_ug": number,"C_mg": number,"D_ug": number,"E_mg": number,"folate_ug": number,"niacin_mg": number},
+  "minerals": {"calcium_mg": number,"iron_mg": number,"zinc_mg": number,"magnesium_mg": number,"potassium_mg": number},
+  "vitamin_insights": [{"key":"C_mg","status":"不足|適量|過多の可能性","note":"短い解説","food_sources":["食材1"]}],
+  "mineral_insights": [{"key":"iron_mg","status":"不足|適量|過多の可能性","note":"短い解説","food_sources":["食材1"]}]
+}`;
+
+  const body = JSON.stringify({
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: {
+      temperature: 0.1,
+      maxOutputTokens: 1200,
+      responseMimeType: "application/json"
+    }
+  });
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+  if (!r.ok) return null;
+  const text = await r.text();
+  let data;
+  try { data = JSON.parse(text); } catch { return null; }
+  const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!raw) return null;
+  try {
+    return normalizeAnalysis(parseGeminiJson(raw));
+  } catch {
+    return null;
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -240,7 +290,14 @@ export default async function handler(req, res) {
               });
             }
           }
-          return res.status(200).json({ analysis: normalizeAnalysis(analysis) });
+          let normalized = normalizeAnalysis(analysis);
+          if (micronutrientsAllZero(normalized)) {
+            const enriched = await enrichMicronutrients(apiKey, normalized);
+            if (enriched) {
+              normalized = { ...normalized, ...enriched };
+            }
+          }
+          return res.status(200).json({ analysis: normalized });
         }
 
         if (r.status === 404) {
