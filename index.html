@@ -135,6 +135,26 @@ JSONスキーマ:
             return body.analysis;
         }
 
+        async function recalculateMealByMenu(menuText, profile, baseAnalysis) {
+            const res = await fetch("/api/recalculate-meal", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    menuText,
+                    profile,
+                    baseAnalysis
+                })
+            });
+            const body = await res.json().catch(() => null);
+            if (!res.ok) {
+                throw new Error(body?.error || "再計算に失敗しました");
+            }
+            if (!body?.analysis) {
+                throw new Error("再計算結果が空です");
+            }
+            return body.analysis;
+        }
+
         function startOfToday() {
             const d = new Date();
             d.setHours(0, 0, 0, 0);
@@ -458,10 +478,13 @@ JSONスキーマ:
             const [editWeight, setEditWeight] = React.useState(String(profile?.weight ?? ""));
             const [editGoal, setEditGoal] = React.useState(String(profile?.goalWeight ?? ""));
             const [analyzing, setAnalyzing] = React.useState(false);
+            const [recalculating, setRecalculating] = React.useState(false);
             const [error, setError] = React.useState(null);
             const [previewResult, setPreviewResult] = React.useState(null);
             const [previewFile, setPreviewFile] = React.useState(null);
             const [previewUrl, setPreviewUrl] = React.useState(null);
+            const [editedMenuText, setEditedMenuText] = React.useState("");
+            const [mealType, setMealType] = React.useState("dinner");
             const cameraInputRef = React.useRef(null);
             const galleryInputRef = React.useRef(null);
 
@@ -544,6 +567,8 @@ JSONスキーマ:
                 setPreviewUrl(null);
                 setPreviewFile(null);
                 setSheetOpen(true);
+                setEditedMenuText("");
+                setMealType("dinner");
             };
 
             const chooseFromCamera = () => cameraInputRef.current?.click();
@@ -572,6 +597,7 @@ JSONスキーマ:
                     if (!m) throw new Error("画像の読み込みに失敗しました");
                     const analysis = await analyzeMealWithGemini(m[2], m[1], profile);
                     setPreviewResult(analysis);
+                    setEditedMenuText((analysis?.menu || []).join("、"));
                 } catch (err) {
                     console.error(err);
                     setError(err.message || "解析に失敗しました");
@@ -579,27 +605,49 @@ JSONスキーマ:
                 setAnalyzing(false);
             };
 
+            const recalculateByEditedMenu = async () => {
+                if (!previewResult) return;
+                const text = editedMenuText.trim();
+                if (!text) {
+                    setError("訂正したメニュー名を入力してください");
+                    return;
+                }
+                setRecalculating(true);
+                setError(null);
+                try {
+                    const next = await recalculateMealByMenu(text, profile, previewResult);
+                    setPreviewResult(next);
+                } catch (err) {
+                    console.error(err);
+                    setError(err.message || "再計算に失敗しました");
+                }
+                setRecalculating(false);
+            };
+
             const saveMeal = async () => {
-                if (!user?.uid || !previewFile || !previewResult) return;
+                if (!user?.uid || !previewResult) return;
                 setAnalyzing(true);
                 setError(null);
                 try {
                     const mealId = db.collection("users").doc(user.uid).collection("meals").doc().id;
                     const path = `users/${user.uid}/meals/${mealId}.jpg`;
                     let imageUrl = "";
-                    try {
+                    if (previewFile) {
+                      try {
                         const ref = storage.ref(path);
                         await ref.put(previewFile);
                         imageUrl = await ref.getDownloadURL();
-                    } catch (storageErr) {
+                      } catch (storageErr) {
                         // 画像アップロード失敗でも食事データは保存して履歴に残す
                         console.error(storageErr);
+                      }
                     }
                     await db.collection("users").doc(user.uid).collection("meals").doc(mealId).set({
                         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
                         createdAtClient: new Date().toISOString(),
+                        mealType,
                         imageUrl,
-                        menu: previewResult.menu || [],
+                        menu: editedMenuText.trim() ? editedMenuText.split(/[\s、,]+/).filter(Boolean) : (previewResult.menu || []),
                         calories_kcal: previewResult.calories_kcal,
                         protein_g: previewResult.protein_g,
                         fat_g: previewResult.fat_g,
@@ -620,8 +668,9 @@ JSONスキーマ:
                         id: mealId,
                         createdAt: new Date(),
                         createdAtClient: new Date().toISOString(),
+                        mealType,
                         imageUrl,
-                        menu: previewResult.menu || [],
+                        menu: editedMenuText.trim() ? editedMenuText.split(/[\s、,]+/).filter(Boolean) : (previewResult.menu || []),
                         calories_kcal: previewResult.calories_kcal,
                         protein_g: previewResult.protein_g,
                         fat_g: previewResult.fat_g,
@@ -793,6 +842,9 @@ JSONスキーマ:
                                         <div className="min-w-0 flex-1">
                                             <p className="text-sm font-bold text-white truncate">{(m.menu || []).join("、")}</p>
                                             <p className="text-xs text-cyan-400/90 font-bold">{m.calories_kcal} kcal</p>
+                                            <p className="text-[10px] text-slate-500 mt-0.5">
+                                                {m.mealType === "breakfast" ? "朝食" : m.mealType === "lunch" ? "昼食" : m.mealType === "dinner" ? "夕食" : "分類未設定"}
+                                            </p>
                                             {m.meal_comment && (
                                                 <p className="text-[11px] text-slate-400 mt-1 line-clamp-2">{m.meal_comment}</p>
                                             )}
@@ -847,6 +899,30 @@ JSONスキーマ:
                                             <p className="text-xs text-slate-500 font-bold">推定メニュー</p>
                                             <p className="text-white font-bold">{(previewResult.menu || []).join("、")}</p>
                                             <p className="text-3xl font-black text-cyan-400 mt-2 tabular-nums">{previewResult.calories_kcal} <span className="text-lg text-slate-400">kcal</span></p>
+                                        </div>
+                                        <div className="mb-4 p-3 rounded-2xl bg-slate-800/50 border border-slate-700/50">
+                                            <p className="text-xs font-bold text-slate-400 mb-2">判定を訂正</p>
+                                            <input
+                                                className="w-full bg-slate-900/70 border border-slate-600/50 rounded-xl px-3 py-2 text-sm text-white outline-none focus:border-cyan-500/60"
+                                                value={editedMenuText}
+                                                onChange={(e) => setEditedMenuText(e.target.value)}
+                                                placeholder="例: 鮭おにぎり 味噌汁 サラダ"
+                                            />
+                                            <div className="flex gap-2 mt-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={recalculateByEditedMenu}
+                                                    disabled={recalculating}
+                                                    className="py-2 px-3 rounded-xl border border-cyan-500/40 text-cyan-300 text-xs font-bold disabled:opacity-50"
+                                                >
+                                                    {recalculating ? "再計算中…" : "訂正内容で再計算"}
+                                                </button>
+                                            </div>
+                                            <div className="grid grid-cols-3 gap-2 mt-3">
+                                                <button type="button" onClick={() => setMealType("breakfast")} className={`py-2 rounded-xl text-xs font-bold border ${mealType === "breakfast" ? "bg-cyan-500/20 border-cyan-400 text-cyan-300" : "border-slate-600 text-slate-300"}`}>朝食</button>
+                                                <button type="button" onClick={() => setMealType("lunch")} className={`py-2 rounded-xl text-xs font-bold border ${mealType === "lunch" ? "bg-cyan-500/20 border-cyan-400 text-cyan-300" : "border-slate-600 text-slate-300"}`}>昼食</button>
+                                                <button type="button" onClick={() => setMealType("dinner")} className={`py-2 rounded-xl text-xs font-bold border ${mealType === "dinner" ? "bg-cyan-500/20 border-cyan-400 text-cyan-300" : "border-slate-600 text-slate-300"}`}>夕食</button>
+                                            </div>
                                         </div>
                                         <div className="mb-4 p-3 rounded-2xl bg-slate-800/50 border border-slate-700/50">
                                             <PfcBars {...pfcPercents(previewResult.protein_g, previewResult.fat_g, previewResult.carbs_g)} />
@@ -937,7 +1013,7 @@ JSONスキーマ:
                                             <button
                                                 type="button"
                                                 onClick={saveMeal}
-                                                disabled={analyzing}
+                                                disabled={analyzing || recalculating}
                                                 className="flex-1 py-3 rounded-2xl bg-gradient-to-r from-cyan-500 to-teal-500 text-slate-950 font-black text-sm disabled:opacity-50"
                                             >
                                                 記録に保存
