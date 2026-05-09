@@ -147,6 +147,9 @@ JSONスキーマ:
   "mineral_insights": [
     { "key": "iron_mg", "status": "不足|適量|過多の可能性", "note": "短い解説", "food_sources": ["補える食材1","食材2"] }
   ],
+  "lacking_nutrients": ["不足している栄養素名"],
+  "recommended_foods": ["次に摂ると良い食材"],
+  "improvement_tips": ["次の食事での改善提案（短文）"],
   "goal_advice": "目標体重に向けた一言アドバイス（任意）",
   "meal_comment": "この食事全体のコメント（短く）"
 }
@@ -730,6 +733,9 @@ JSONスキーマ:
                         minerals: previewResult.minerals || {},
                         vitamin_insights: previewResult.vitamin_insights || [],
                         mineral_insights: previewResult.mineral_insights || [],
+                        lacking_nutrients: previewResult.lacking_nutrients || [],
+                        recommended_foods: previewResult.recommended_foods || [],
+                        improvement_tips: previewResult.improvement_tips || [],
                         meal_comment: previewResult.meal_comment || "",
                         goal_advice: previewResult.goal_advice || ""
                     });
@@ -753,6 +759,9 @@ JSONスキーマ:
                         minerals: previewResult.minerals || {},
                         vitamin_insights: previewResult.vitamin_insights || [],
                         mineral_insights: previewResult.mineral_insights || [],
+                        lacking_nutrients: previewResult.lacking_nutrients || [],
+                        recommended_foods: previewResult.recommended_foods || [],
+                        improvement_tips: previewResult.improvement_tips || [],
                         meal_comment: previewResult.meal_comment || "",
                         goal_advice: previewResult.goal_advice || ""
                     }, ...prev]);
@@ -1059,6 +1068,28 @@ JSONスキーマ:
                                                 )}
                                                 {previewResult.goal_advice && (
                                                     <p><span className="text-slate-500 font-bold">目標向けアドバイス</span><br />{previewResult.goal_advice}</p>
+                                                )}
+                                            </div>
+                                        )}
+                                        {(previewResult.lacking_nutrients?.length > 0 || previewResult.recommended_foods?.length > 0 || previewResult.improvement_tips?.length > 0) && (
+                                            <div className="mb-4 p-3 rounded-2xl bg-slate-800/50 border border-slate-700/50 text-sm space-y-2">
+                                                <p className="text-slate-300 font-bold">改善アドバイス</p>
+                                                {previewResult.lacking_nutrients?.length > 0 && (
+                                                    <p className="text-rose-300 text-xs">
+                                                        不足しやすい栄養素: {previewResult.lacking_nutrients.join("、")}
+                                                    </p>
+                                                )}
+                                                {previewResult.recommended_foods?.length > 0 && (
+                                                    <p className="text-emerald-300 text-xs">
+                                                        次におすすめの食材: {previewResult.recommended_foods.join("、")}
+                                                    </p>
+                                                )}
+                                                {previewResult.improvement_tips?.length > 0 && (
+                                                    <ul className="space-y-1">
+                                                        {previewResult.improvement_tips.slice(0, 4).map((tip, idx) => (
+                                                            <li key={idx} className="text-slate-300 text-xs">・{tip}</li>
+                                                        ))}
+                                                    </ul>
                                                 )}
                                             </div>
                                         )}

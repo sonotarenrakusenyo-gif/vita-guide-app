@@ -21,6 +21,9 @@ function emptyAnalysis(mealComment) {
     },
     vitamin_insights: [],
     mineral_insights: [],
+    improvement_tips: [],
+    lacking_nutrients: [],
+    recommended_foods: [],
     goal_advice: "",
     meal_comment: mealComment || "AI出力の整形に失敗したため、再解析をおすすめします。"
   };
@@ -56,6 +59,9 @@ function normalizeAnalysis(input) {
     minerals,
     vitamin_insights: Array.isArray(src.vitamin_insights) ? src.vitamin_insights : [],
     mineral_insights: Array.isArray(src.mineral_insights) ? src.mineral_insights : [],
+    improvement_tips: Array.isArray(src.improvement_tips) ? src.improvement_tips.map((x) => String(x)) : [],
+    lacking_nutrients: Array.isArray(src.lacking_nutrients) ? src.lacking_nutrients.map((x) => String(x)) : [],
+    recommended_foods: Array.isArray(src.recommended_foods) ? src.recommended_foods.map((x) => String(x)) : [],
     goal_advice: typeof src.goal_advice === "string" ? src.goal_advice : "",
     meal_comment: typeof src.meal_comment === "string" ? src.meal_comment : ""
   };
@@ -187,7 +193,10 @@ JSON:
   "vitamins": {"A_ug_RAE": number,"B1_mg": number,"B2_mg": number,"B6_mg": number,"B12_ug": number,"C_mg": number,"D_ug": number,"E_mg": number,"folate_ug": number,"niacin_mg": number},
   "minerals": {"calcium_mg": number,"iron_mg": number,"zinc_mg": number,"magnesium_mg": number,"potassium_mg": number},
   "vitamin_insights": [{"key":"C_mg","status":"不足|適量|過多の可能性","note":"短い解説","food_sources":["食材1"]}],
-  "mineral_insights": [{"key":"iron_mg","status":"不足|適量|過多の可能性","note":"短い解説","food_sources":["食材1"]}]
+  "mineral_insights": [{"key":"iron_mg","status":"不足|適量|過多の可能性","note":"短い解説","food_sources":["食材1"]}],
+  "lacking_nutrients": ["不足しやすい栄養素名"],
+  "recommended_foods": ["補える食材名"],
+  "improvement_tips": ["次の食事での改善提案を短く"]
 }`;
 
   const body = JSON.stringify({

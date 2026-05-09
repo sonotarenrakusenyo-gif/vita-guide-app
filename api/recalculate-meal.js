@@ -13,6 +13,9 @@ const DEFAULT_ANALYSIS = {
   },
   vitamin_insights: [],
   mineral_insights: [],
+  improvement_tips: [],
+  lacking_nutrients: [],
+  recommended_foods: [],
   goal_advice: "",
   meal_comment: ""
 };
@@ -45,6 +48,9 @@ function normalize(input) {
   Object.keys(out.minerals).forEach((k) => { out.minerals[k] = toNumberOrZero(src?.minerals?.[k]); });
   out.vitamin_insights = Array.isArray(src.vitamin_insights) ? src.vitamin_insights : [];
   out.mineral_insights = Array.isArray(src.mineral_insights) ? src.mineral_insights : [];
+  out.improvement_tips = Array.isArray(src.improvement_tips) ? src.improvement_tips.map((x) => String(x)) : [];
+  out.lacking_nutrients = Array.isArray(src.lacking_nutrients) ? src.lacking_nutrients.map((x) => String(x)) : [];
+  out.recommended_foods = Array.isArray(src.recommended_foods) ? src.recommended_foods.map((x) => String(x)) : [];
   out.goal_advice = typeof src.goal_advice === "string" ? src.goal_advice : "";
   out.meal_comment = typeof src.meal_comment === "string" ? src.meal_comment : "";
   return out;
@@ -76,6 +82,9 @@ JSON:
   "minerals": {"calcium_mg": number,"iron_mg": number,"zinc_mg": number,"magnesium_mg": number,"potassium_mg": number},
   "vitamin_insights": [{"key":"C_mg","status":"不足|適量|過多の可能性","note":"短い解説","food_sources":["食材"]}],
   "mineral_insights": [{"key":"iron_mg","status":"不足|適量|過多の可能性","note":"短い解説","food_sources":["食材"]}],
+  "lacking_nutrients": ["不足しやすい栄養素名"],
+  "recommended_foods": ["補える食材名"],
+  "improvement_tips": ["次の食事での改善提案を短く"],
   "goal_advice": "短いアドバイス",
   "meal_comment": "短いコメント"
 }`;
