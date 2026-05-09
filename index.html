@@ -3,6 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- 本番キャッシュで古い index が残らないよう補助（サーバー側ヘッダーも vercel.json で設定） -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
     <title>Vita-Guide | ビタ・ガイド</title>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -582,8 +585,13 @@ JSONスキーマ:
             const [historyMealTypeFilter, setHistoryMealTypeFilter] = React.useState("all");
             const [historySort, setHistorySort] = React.useState("newest");
             const [notifyEnabled, setNotifyEnabled] = React.useState(false);
+            const [mainTab, setMainTab] = React.useState("home");
+            const [detailMeal, setDetailMeal] = React.useState(null);
+            const [savingMeal, setSavingMeal] = React.useState(false);
             const cameraInputRef = React.useRef(null);
             const galleryInputRef = React.useRef(null);
+
+            const APP_DEPLOY_TAG = "2026-05-10-tabs";
 
             const dailyTarget = suggestedDailyCalories(profile);
             const mealsToday = React.useMemo(() => {
@@ -812,8 +820,8 @@ JSONスキーマ:
             };
 
             const saveMeal = async () => {
-                if (!user?.uid || !previewResult) return;
-                setAnalyzing(true);
+                if (!user?.uid || !previewResult || savingMeal) return;
+                setSavingMeal(true);
                 setError(null);
                 try {
                     const mealId = db.collection("users").doc(user.uid).collection("meals").doc().id;
@@ -889,7 +897,7 @@ JSONスキーマ:
                     console.error(err);
                     setError("保存に失敗しました（Storage / Firestore の権限を確認してください）");
                 }
-                setAnalyzing(false);
+                setSavingMeal(false);
             };
 
             const discardPreview = () => {
@@ -901,7 +909,7 @@ JSONスキーマ:
             };
 
             return (
-                <div className="max-w-lg mx-auto min-h-screen pb-36 px-4 pt-6 bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950">
+                <div className="max-w-lg mx-auto min-h-screen pb-44 px-4 pt-6 bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950">
                     <input
                         ref={cameraInputRef}
                         type="file"
@@ -950,6 +958,14 @@ JSONスキーマ:
                         </div>
                     </header>
 
+                    {error && !sheetOpen && (
+                        <div className="mb-4 rounded-2xl border border-rose-500/35 bg-rose-950/35 px-3 py-2 text-rose-200 text-xs">
+                            {error}
+                        </div>
+                    )}
+
+                    {mainTab === "home" && (
+                    <>
                     <div className="glass-card rounded-3xl p-6 mb-4 animate-fadeIn">
                         <p className="text-xs font-bold text-slate-400 mb-1">今日の摂取カロリー</p>
                         <div className="flex items-baseline gap-2">
@@ -998,7 +1014,11 @@ JSONスキーマ:
                             </div>
                         </div>
                     </div>
+                    </>
+                    )}
 
+                    {mainTab === "report" && (
+                    <>
                     <div className="glass-card rounded-3xl p-5 mb-4">
                         <h2 className="text-sm font-black text-white mb-3">週次レポート（直近7日）</h2>
                         <div className="grid grid-cols-2 gap-2 text-xs">
@@ -1015,18 +1035,6 @@ JSONスキーマ:
                                 <p className="text-rose-300 font-bold">{lowVitKeys.length ? lowVitKeys.join("、") : "データ蓄積中"}</p>
                             </div>
                         </div>
-                    </div>
-
-                    <div className="glass-card rounded-3xl p-5 mb-4">
-                        <h2 className="text-sm font-black text-white mb-2">不足リマインド</h2>
-                        <p className="text-xs text-slate-300">{reminderText}</p>
-                        <button
-                            type="button"
-                            onClick={triggerReminderNotification}
-                            className="mt-3 py-2 px-3 rounded-xl border border-cyan-500/40 text-cyan-300 text-xs font-bold"
-                        >
-                            {notifyEnabled ? "通知を再送する" : "この内容を通知で受け取る"}
-                        </button>
                     </div>
 
                     <div className="glass-card rounded-3xl p-5 mb-4">
@@ -1085,9 +1093,6 @@ JSONスキーマ:
                                 <option value="kcal_asc">カロリー低い順</option>
                             </select>
                         </div>
-                        {error && !sheetOpen && (
-                            <p className="text-rose-400 text-xs mb-2">{error}</p>
-                        )}
                         {loadingMeals ? (
                             <p className="text-slate-500 text-sm">読み込み中…</p>
                         ) : filteredMealLogs.length === 0 ? (
@@ -1095,7 +1100,12 @@ JSONスキーマ:
                         ) : (
                             <ul className="space-y-3">
                                 {filteredMealLogs.map((m) => (
-                                    <li key={m.id} className="flex gap-3 bg-slate-800/40 rounded-2xl p-3 border border-slate-700/40">
+                                    <li key={m.id}>
+                                        <button
+                                            type="button"
+                                            onClick={() => setDetailMeal(m)}
+                                            className="w-full flex gap-3 bg-slate-800/40 rounded-2xl p-3 border border-slate-700/40 text-left hover:bg-slate-800/70 transition-colors"
+                                        >
                                         {m.imageUrl ? (
                                             <img src={m.imageUrl} alt="" className="w-20 h-20 rounded-xl object-cover shrink-0" />
                                         ) : (
@@ -1106,19 +1116,90 @@ JSONスキーマ:
                                             <p className="text-xs text-cyan-400/90 font-bold">{m.calories_kcal} kcal</p>
                                             <p className="text-[10px] text-slate-500 mt-0.5">
                                                 {m.mealType === "breakfast" ? "朝食" : m.mealType === "lunch" ? "昼食" : m.mealType === "dinner" ? "夕食" : "分類未設定"}
+                                                <span className="text-slate-600"> · タップで詳細</span>
                                             </p>
                                             {m.meal_comment && (
                                                 <p className="text-[11px] text-slate-400 mt-1 line-clamp-2">{m.meal_comment}</p>
                                             )}
                                         </div>
+                                        </button>
                                     </li>
                                 ))}
                             </ul>
                         )}
                     </div>
+                    </>
+                    )}
+
+                    {mainTab === "settings" && (
+                    <div className="glass-card rounded-3xl p-5 mb-4 space-y-5">
+                        <div>
+                            <h2 className="text-sm font-black text-white mb-2">不足リマインド</h2>
+                            <p className="text-xs text-slate-300">{reminderText}</p>
+                            <p className="text-[10px] text-slate-500 mt-2 leading-relaxed">
+                                「この内容を通知で受け取る」は、この端末のブラウザ通知です（インストール型アプリのプッシュ通知ではありません）。
+                                iPhone の Safari では OS の設定で通知を許可する必要があります。
+                            </p>
+                            <button
+                                type="button"
+                                onClick={triggerReminderNotification}
+                                className="mt-3 py-2 px-3 rounded-xl border border-cyan-500/40 text-cyan-300 text-xs font-bold"
+                            >
+                                {notifyEnabled ? "通知を再送する" : "この内容を通知で受け取る"}
+                            </button>
+                        </div>
+                        <div className="border-t border-slate-700/50 pt-4">
+                            <h2 className="text-sm font-black text-white mb-2">プロフィール・目標</h2>
+                            <p className="text-xs text-slate-400 mb-3">カロリー目安・AI のアドバイス・摂取目安に使われます。</p>
+                            <button
+                                type="button"
+                                onClick={() => setProfileOpen(true)}
+                                className="w-full py-3 rounded-2xl border border-cyan-500/40 text-cyan-300 font-bold text-sm"
+                            >
+                                プロフィールを編集
+                            </button>
+                        </div>
+                        <div className="border-t border-slate-700/50 pt-4">
+                            <p className="text-[10px] text-slate-600 font-mono">ビルド: {APP_DEPLOY_TAG}</p>
+                            <p className="text-[10px] text-slate-500 mt-1">
+                                画面が古い場合は再読み込みするか、数分後に再デプロイ済みか確認してください。
+                            </p>
+                        </div>
+                    </div>
+                    )}
+
+                    <nav
+                        className="fixed bottom-0 left-0 right-0 z-30 border-t border-slate-700/50 bg-slate-950/95 backdrop-blur-md safe-area-pb"
+                        style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}
+                        aria-label="メインタブ"
+                    >
+                        <div className="max-w-lg mx-auto flex">
+                            <button
+                                type="button"
+                                onClick={() => setMainTab("home")}
+                                className={`flex-1 py-3 text-xs font-black tracking-wide ${mainTab === "home" ? "text-cyan-400 border-t-2 border-cyan-400 -mt-px" : "text-slate-500"}`}
+                            >
+                                ホーム
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setMainTab("report")}
+                                className={`flex-1 py-3 text-xs font-black tracking-wide ${mainTab === "report" ? "text-cyan-400 border-t-2 border-cyan-400 -mt-px" : "text-slate-500"}`}
+                            >
+                                レポート
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setMainTab("settings")}
+                                className={`flex-1 py-3 text-xs font-black tracking-wide ${mainTab === "settings" ? "text-cyan-400 border-t-2 border-cyan-400 -mt-px" : "text-slate-500"}`}
+                            >
+                                設定
+                            </button>
+                        </div>
+                    </nav>
 
                     {/* 中央 FAB */}
-                    <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-40">
+                    <div className="fixed bottom-[5.25rem] left-1/2 -translate-x-1/2 z-40 sm:bottom-[5.5rem]">
                         <div className="flex items-end gap-3">
                             <button
                                 type="button"
@@ -1322,10 +1403,10 @@ JSONスキーマ:
                                             <button
                                                 type="button"
                                                 onClick={saveMeal}
-                                                disabled={analyzing || recalculating}
+                                                disabled={savingMeal || recalculating}
                                                 className="flex-1 py-3 rounded-2xl bg-gradient-to-r from-cyan-500 to-teal-500 text-slate-950 font-black text-sm disabled:opacity-50"
                                             >
-                                                記録に保存
+                                                {savingMeal ? "保存中…" : "記録に保存"}
                                             </button>
                                         </div>
                                     </>
@@ -1367,6 +1448,107 @@ JSONスキーマ:
                                         </div>
                                     </div>
                                 )}
+                            </div>
+                        </div>
+                    )}
+
+                    {detailMeal && (
+                        <div className="fixed inset-0 z-[55] flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+                            <div className="w-full max-w-lg glass-card rounded-3xl max-h-[90vh] overflow-y-auto p-5 animate-fadeIn border-cyan-500/20">
+                                <div className="flex justify-between items-start gap-2 mb-4">
+                                    <div>
+                                        <h2 className="text-lg font-black text-white">記録の詳細</h2>
+                                        <p className="text-[11px] text-slate-500 mt-1">
+                                            {(() => {
+                                                const d = detailMeal.createdAt?.toDate ? detailMeal.createdAt.toDate() : (detailMeal.createdAtClient ? new Date(detailMeal.createdAtClient) : null);
+                                                if (!d || Number.isNaN(d.getTime())) return "日時不明";
+                                                return d.toLocaleString("ja-JP", { dateStyle: "medium", timeStyle: "short" });
+                                            })()}
+                                            {" · "}
+                                            {detailMeal.mealType === "breakfast" ? "朝食" : detailMeal.mealType === "lunch" ? "昼食" : detailMeal.mealType === "dinner" ? "夕食" : "分類未設定"}
+                                        </p>
+                                    </div>
+                                    <button type="button" onClick={() => setDetailMeal(null)} className="text-slate-400 text-sm font-bold shrink-0">閉じる</button>
+                                </div>
+                                {detailMeal.imageUrl && (
+                                    <img src={detailMeal.imageUrl} alt="" className="w-full rounded-2xl mb-4 max-h-48 object-cover" />
+                                )}
+                                <p className="text-white font-bold mb-1">{(detailMeal.menu || []).join("、")}</p>
+                                <p className="text-3xl font-black text-cyan-400 mb-4 tabular-nums">{detailMeal.calories_kcal} <span className="text-lg text-slate-400">kcal</span></p>
+                                <div className="mb-4 p-3 rounded-2xl bg-slate-800/50 border border-slate-700/50">
+                                    <PfcBars {...pfcPercents(detailMeal.protein_g, detailMeal.fat_g, detailMeal.carbs_g)} />
+                                    <div className="grid grid-cols-2 gap-2 mt-3 text-xs">
+                                        <div className="rounded-xl bg-slate-900/70 p-2 border border-slate-700/50">
+                                            <p className="text-slate-500">タンパク質</p>
+                                            <p className="text-cyan-300 font-bold">{Number(detailMeal.protein_g || 0).toFixed(1)} g</p>
+                                        </div>
+                                        <div className="rounded-xl bg-slate-900/70 p-2 border border-slate-700/50">
+                                            <p className="text-slate-500">脂質</p>
+                                            <p className="text-amber-300 font-bold">{Number(detailMeal.fat_g || 0).toFixed(1)} g</p>
+                                        </div>
+                                        <div className="rounded-xl bg-slate-900/70 p-2 border border-slate-700/50">
+                                            <p className="text-slate-500">炭水化物</p>
+                                            <p className="text-violet-300 font-bold">{Number(detailMeal.carbs_g || 0).toFixed(1)} g</p>
+                                        </div>
+                                        <div className="rounded-xl bg-slate-900/70 p-2 border border-slate-700/50">
+                                            <p className="text-slate-500">信頼度</p>
+                                            <p className="text-emerald-300 font-bold">{Math.round(Number(detailMeal.confidence_score || 0))}%</p>
+                                        </div>
+                                    </div>
+                                </div>
+                                {(detailMeal.meal_comment || detailMeal.goal_advice) && (
+                                    <div className="mb-4 text-sm text-slate-300 space-y-2">
+                                        {detailMeal.meal_comment && (
+                                            <p><span className="text-slate-500 font-bold">コメント</span><br />{detailMeal.meal_comment}</p>
+                                        )}
+                                        {detailMeal.goal_advice && (
+                                            <p><span className="text-slate-500 font-bold">目標向け</span><br />{detailMeal.goal_advice}</p>
+                                        )}
+                                    </div>
+                                )}
+                                {(detailMeal.lacking_nutrients?.length > 0 || detailMeal.recommended_foods?.length > 0 || detailMeal.improvement_tips?.length > 0) && (
+                                    <div className="mb-4 p-3 rounded-2xl bg-slate-800/50 border border-slate-700/50 text-sm space-y-2">
+                                        <p className="text-slate-300 font-bold">アドバイス（保存時）</p>
+                                        {detailMeal.lacking_nutrients?.length > 0 && (
+                                            <p className="text-rose-300 text-xs">不足しやすい: {detailMeal.lacking_nutrients.join("、")}</p>
+                                        )}
+                                        {detailMeal.recommended_foods?.length > 0 && (
+                                            <p className="text-emerald-300 text-xs">おすすめ食材: {detailMeal.recommended_foods.join("、")}</p>
+                                        )}
+                                        {detailMeal.improvement_tips?.length > 0 && (
+                                            <ul className="space-y-1">
+                                                {detailMeal.improvement_tips.slice(0, 6).map((tip, idx) => (
+                                                    <li key={idx} className="text-slate-300 text-xs">・{tip}</li>
+                                                ))}
+                                            </ul>
+                                        )}
+                                    </div>
+                                )}
+                                {detailMeal.substitute_suggestions?.length > 0 && (
+                                    <div className="mb-4 p-3 rounded-2xl bg-slate-800/50 border border-slate-700/50 text-sm">
+                                        <p className="text-slate-300 font-bold mb-2">代替提案</p>
+                                        <ul className="space-y-1">
+                                            {detailMeal.substitute_suggestions.map((x, i) => (
+                                                <li key={i} className="text-slate-300 text-xs">・{x}</li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                )}
+                                <div className="mb-4">
+                                    <h3 className="text-sm font-black text-white mb-2">ビタミン（この食事）</h3>
+                                    <VitaminGrid vitamins={detailMeal.vitamins} insights={detailMeal.vitamin_insights} referenceMap={personalizedRda.vitamin} />
+                                </div>
+                                <div className="mb-2">
+                                    <h3 className="text-sm font-black text-white mb-2">ミネラル（この食事）</h3>
+                                    <MineralGrid minerals={detailMeal.minerals} insights={detailMeal.mineral_insights} referenceMap={personalizedRda.mineral} />
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => setDetailMeal(null)}
+                                    className="w-full py-3 rounded-2xl border border-slate-600 text-slate-300 font-bold text-sm"
+                                >
+                                    閉じる
+                                </button>
                             </div>
                         </div>
                     )}
