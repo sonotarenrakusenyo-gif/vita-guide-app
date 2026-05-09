@@ -24,6 +24,9 @@ function emptyAnalysis(mealComment) {
     improvement_tips: [],
     lacking_nutrients: [],
     recommended_foods: [],
+    substitute_suggestions: [],
+    confidence_score: 0,
+    reminder_message: "",
     goal_advice: "",
     meal_comment: mealComment || "AI出力の整形に失敗したため、再解析をおすすめします。"
   };
@@ -62,6 +65,9 @@ function normalizeAnalysis(input) {
     improvement_tips: Array.isArray(src.improvement_tips) ? src.improvement_tips.map((x) => String(x)) : [],
     lacking_nutrients: Array.isArray(src.lacking_nutrients) ? src.lacking_nutrients.map((x) => String(x)) : [],
     recommended_foods: Array.isArray(src.recommended_foods) ? src.recommended_foods.map((x) => String(x)) : [],
+    substitute_suggestions: Array.isArray(src.substitute_suggestions) ? src.substitute_suggestions.map((x) => String(x)) : [],
+    confidence_score: Math.max(0, Math.min(100, toNumberOrZero(src.confidence_score))),
+    reminder_message: typeof src.reminder_message === "string" ? src.reminder_message : "",
     goal_advice: typeof src.goal_advice === "string" ? src.goal_advice : "",
     meal_comment: typeof src.meal_comment === "string" ? src.meal_comment : ""
   };
@@ -196,7 +202,10 @@ JSON:
   "mineral_insights": [{"key":"iron_mg","status":"不足|適量|過多の可能性","note":"短い解説","food_sources":["食材1"]}],
   "lacking_nutrients": ["不足しやすい栄養素名"],
   "recommended_foods": ["補える食材名"],
+  "substitute_suggestions": ["置き換え提案（例: 唐揚げ→焼き魚）"],
   "improvement_tips": ["次の食事での改善提案を短く"]
+  "confidence_score": number, 
+  "reminder_message": "短い通知文"
 }`;
 
   const body = JSON.stringify({

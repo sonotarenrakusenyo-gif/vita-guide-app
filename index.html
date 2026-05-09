@@ -114,6 +114,7 @@
 - 目標体重: ${profile?.goalWeight ?? "?"} kg
 - 性別: ${profile?.sex === "male" ? "男性" : profile?.sex === "female" ? "女性" : "未設定"}
 - 年齢: ${profile?.age ?? "未設定"}
+- 目標モード: ${profile?.goalMode || "balance"}
 
 JSONスキーマ:
 {
@@ -149,7 +150,10 @@ JSONスキーマ:
   ],
   "lacking_nutrients": ["不足している栄養素名"],
   "recommended_foods": ["次に摂ると良い食材"],
+  "substitute_suggestions": ["置き換え提案（例: カップ麺→そば+ゆで卵）"],
   "improvement_tips": ["次の食事での改善提案（短文）"],
+  "confidence_score": number,
+  "reminder_message": "不足栄養素の短い通知文",
   "goal_advice": "目標体重に向けた一言アドバイス（任意）",
   "meal_comment": "この食事全体のコメント（短く）"
 }
@@ -270,6 +274,8 @@ JSONスキーマ:
             const gw = Number(profile?.goalWeight);
             if (!Number.isFinite(w)) return 1800;
             let base = Math.round(w * 28);
+            if (profile?.goalMode === "cut") base -= 250;
+            if (profile?.goalMode === "bulk") base += 250;
             if (Number.isFinite(gw) && gw < w - 0.5) base = Math.max(1200, base - 300);
             if (Number.isFinite(gw) && gw > w + 0.5) base = base + 200;
             return base;
@@ -332,6 +338,7 @@ JSONスキーマ:
             const [goalWeight, setGoalWeight] = React.useState('58');
             const [sex, setSex] = React.useState('female');
             const [age, setAge] = React.useState('30');
+            const [goalMode, setGoalMode] = React.useState('balance');
             const [busy, setBusy] = React.useState(false);
 
             const handleSubmit = async (e) => {
@@ -343,6 +350,7 @@ JSONスキーマ:
                     goalWeight: parseFloat(goalWeight) || 60,
                     sex,
                     age: parseInt(age, 10) || 30,
+                    goalMode,
                     createdAt: firebase.firestore.FieldValue.serverTimestamp()
                 };
                 await db.collection("users").doc(userId).set(data);
@@ -390,6 +398,19 @@ JSONスキーマ:
                                         required
                                     />
                                 </div>
+                            </div>
+                            <div>
+                                <label className="text-xs text-slate-500 font-bold">目標モード</label>
+                                <select
+                                    className="mt-1 w-full bg-slate-800/80 border border-slate-600/50 rounded-2xl px-4 py-3 text-white outline-none focus:border-cyan-500/60"
+                                    value={goalMode}
+                                    onChange={(e) => setGoalMode(e.target.value)}
+                                >
+                                    <option value="balance">維持（バランス）</option>
+                                    <option value="cut">減量</option>
+                                    <option value="bulk">増量</option>
+                                    <option value="health">体調改善</option>
+                                </select>
                             </div>
                             <div className="grid grid-cols-2 gap-3">
                                 <div>
@@ -548,6 +569,7 @@ JSONスキーマ:
             const [editGoal, setEditGoal] = React.useState(String(profile?.goalWeight ?? ""));
             const [editSex, setEditSex] = React.useState(profile?.sex || "female");
             const [editAge, setEditAge] = React.useState(String(profile?.age ?? 30));
+            const [editGoalMode, setEditGoalMode] = React.useState(profile?.goalMode || "balance");
             const [analyzing, setAnalyzing] = React.useState(false);
             const [recalculating, setRecalculating] = React.useState(false);
             const [error, setError] = React.useState(null);
@@ -556,6 +578,10 @@ JSONスキーマ:
             const [previewUrl, setPreviewUrl] = React.useState(null);
             const [editedMenuText, setEditedMenuText] = React.useState("");
             const [mealType, setMealType] = React.useState("dinner");
+            const [historySearch, setHistorySearch] = React.useState("");
+            const [historyMealTypeFilter, setHistoryMealTypeFilter] = React.useState("all");
+            const [historySort, setHistorySort] = React.useState("newest");
+            const [notifyEnabled, setNotifyEnabled] = React.useState(false);
             const cameraInputRef = React.useRef(null);
             const galleryInputRef = React.useRef(null);
 
@@ -577,6 +603,48 @@ JSONスキーマ:
             const personalizedRda = React.useMemo(() => getPersonalizedRda(profile), [profile]);
             const vitaminScore = micronutrientScore(vitSum, personalizedRda.vitamin);
             const mineralScore = micronutrientScore(mineralSum, personalizedRda.mineral);
+            const weeklyMeals = React.useMemo(() => {
+                const now = Date.now();
+                const weekAgo = now - (7 * 24 * 60 * 60 * 1000);
+                return mealLogs.filter((m) => {
+                    const d = m.createdAt?.toDate ? m.createdAt.toDate() : (m.createdAt ? new Date(m.createdAt) : null);
+                    const clientD = m.createdAtClient ? new Date(m.createdAtClient) : null;
+                    const t = d?.getTime?.() || clientD?.getTime?.() || 0;
+                    return t >= weekAgo;
+                });
+            }, [mealLogs]);
+            const weeklyPfc = pfcFromMeals(weeklyMeals);
+            const weeklyKcalAvg = weeklyMeals.length ? Math.round(weeklyMeals.reduce((s, m) => s + (Number(m.calories_kcal) || 0), 0) / 7) : 0;
+            const weekVit = sumVitaminsFromMeals(weeklyMeals);
+            const lowVitKeys = Object.keys(personalizedRda.vitamin)
+                .map((k) => ({ k, pct: ((Number(weekVit[k]) || 0) / personalizedRda.vitamin[k].rda) * 100 }))
+                .sort((a, b) => a.pct - b.pct)
+                .slice(0, 3)
+                .map(({ k }) => personalizedRda.vitamin[k].label);
+            const reminderText = React.useMemo(() => {
+                if (!mealLogs.length) return "今日の食事を1件記録して、不足栄養素をチェックしましょう。";
+                if (lowVitKeys.length) return `不足しやすい栄養素: ${lowVitKeys.join("、")}。次の食事で補いましょう。`;
+                return "栄養バランスは良好です。水分補給も忘れずに。";
+            }, [mealLogs.length, lowVitKeys.join("|")]);
+            const filteredMealLogs = React.useMemo(() => {
+                const q = historySearch.trim().toLowerCase();
+                let list = mealLogs.filter((m) => {
+                    if (historyMealTypeFilter !== "all" && m.mealType !== historyMealTypeFilter) return false;
+                    if (!q) return true;
+                    const menuText = (m.menu || []).join(" ").toLowerCase();
+                    const commentText = String(m.meal_comment || "").toLowerCase();
+                    return menuText.includes(q) || commentText.includes(q);
+                });
+                list = [...list];
+                list.sort((a, b) => {
+                    const ad = a.createdAt?.toDate ? a.createdAt.toDate() : (a.createdAtClient ? new Date(a.createdAtClient) : new Date(0));
+                    const bd = b.createdAt?.toDate ? b.createdAt.toDate() : (b.createdAtClient ? new Date(b.createdAtClient) : new Date(0));
+                    if (historySort === "kcal_desc") return (Number(b.calories_kcal) || 0) - (Number(a.calories_kcal) || 0);
+                    if (historySort === "kcal_asc") return (Number(a.calories_kcal) || 0) - (Number(b.calories_kcal) || 0);
+                    return bd - ad;
+                });
+                return list;
+            }, [mealLogs, historySearch, historyMealTypeFilter, historySort]);
 
             const loadMeals = React.useCallback(async () => {
                 if (!user?.uid) return;
@@ -616,6 +684,7 @@ JSONスキーマ:
                     setEditGoal(profile?.goalWeight != null ? String(profile.goalWeight) : "");
                     setEditSex(profile?.sex || "female");
                     setEditAge(profile?.age != null ? String(profile.age) : "30");
+                    setEditGoalMode(profile?.goalMode || "balance");
                 }
             }, [profileOpen, profile]);
 
@@ -631,6 +700,7 @@ JSONスキーマ:
                     goalWeight: Number.isFinite(g) ? g : (profile?.goalWeight ?? profile?.weight ?? 60),
                     sex: editSex === "male" ? "male" : "female",
                     age: Number.isFinite(a) ? a : (profile?.age ?? 30),
+                    goalMode: editGoalMode || "balance",
                 };
                 await db.collection("users").doc(user.uid).update(data);
                 setProfile({ ...profile, ...data });
@@ -701,6 +771,46 @@ JSONスキーマ:
                 setRecalculating(false);
             };
 
+            const analyzeFromTextOnly = async () => {
+                const text = editedMenuText.trim();
+                if (!text) {
+                    setError("食べたものをテキストで入力してください");
+                    return;
+                }
+                setRecalculating(true);
+                setError(null);
+                try {
+                    const next = await recalculateMealByMenu(text, profile, {});
+                    setPreviewResult(next);
+                } catch (err) {
+                    console.error(err);
+                    setError(err.message || "テキスト解析に失敗しました");
+                }
+                setRecalculating(false);
+            };
+
+            const triggerReminderNotification = async () => {
+                try {
+                    if (!("Notification" in window)) {
+                        setError("このブラウザは通知に対応していません");
+                        return;
+                    }
+                    let permission = Notification.permission;
+                    if (permission === "default") {
+                        permission = await Notification.requestPermission();
+                    }
+                    if (permission !== "granted") {
+                        setError("通知が許可されていません");
+                        return;
+                    }
+                    new Notification("Vita-Guide リマインド", { body: reminderText });
+                    setNotifyEnabled(true);
+                } catch (e) {
+                    console.error(e);
+                    setError("通知の送信に失敗しました");
+                }
+            };
+
             const saveMeal = async () => {
                 if (!user?.uid || !previewResult) return;
                 setAnalyzing(true);
@@ -735,7 +845,10 @@ JSONスキーマ:
                         mineral_insights: previewResult.mineral_insights || [],
                         lacking_nutrients: previewResult.lacking_nutrients || [],
                         recommended_foods: previewResult.recommended_foods || [],
+                        substitute_suggestions: previewResult.substitute_suggestions || [],
                         improvement_tips: previewResult.improvement_tips || [],
+                        confidence_score: previewResult.confidence_score || 0,
+                        reminder_message: previewResult.reminder_message || "",
                         meal_comment: previewResult.meal_comment || "",
                         goal_advice: previewResult.goal_advice || ""
                     });
@@ -761,7 +874,10 @@ JSONスキーマ:
                         mineral_insights: previewResult.mineral_insights || [],
                         lacking_nutrients: previewResult.lacking_nutrients || [],
                         recommended_foods: previewResult.recommended_foods || [],
+                        substitute_suggestions: previewResult.substitute_suggestions || [],
                         improvement_tips: previewResult.improvement_tips || [],
+                        confidence_score: previewResult.confidence_score || 0,
+                        reminder_message: previewResult.reminder_message || "",
                         meal_comment: previewResult.meal_comment || "",
                         goal_advice: previewResult.goal_advice || ""
                     }, ...prev]);
@@ -815,6 +931,8 @@ JSONスキーマ:
                                 {profile?.sex === "male" ? "男性" : profile?.sex === "female" ? "女性" : "性別未設定"}
                                 <span className="text-slate-600"> · </span>
                                 {profile?.age ?? "?"}歳
+                                <span className="text-slate-600"> · </span>
+                                {profile?.goalMode === "cut" ? "減量" : profile?.goalMode === "bulk" ? "増量" : profile?.goalMode === "health" ? "体調改善" : "維持"}
                             </p>
                         </div>
                         <div className="flex flex-col items-end gap-2 shrink-0">
@@ -882,6 +1000,36 @@ JSONスキーマ:
                     </div>
 
                     <div className="glass-card rounded-3xl p-5 mb-4">
+                        <h2 className="text-sm font-black text-white mb-3">週次レポート（直近7日）</h2>
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                            <div className="rounded-2xl p-3 bg-slate-800/60 border border-slate-700/50">
+                                <p className="text-slate-500">平均カロリー/日</p>
+                                <p className="text-emerald-300 font-bold">{weeklyKcalAvg} kcal</p>
+                            </div>
+                            <div className="rounded-2xl p-3 bg-slate-800/60 border border-slate-700/50">
+                                <p className="text-slate-500">PFC(週平均)</p>
+                                <p className="text-cyan-300 font-bold">P{weeklyPfc.pPct}% F{weeklyPfc.fPct}% C{weeklyPfc.cPct}%</p>
+                            </div>
+                            <div className="col-span-2 rounded-2xl p-3 bg-slate-800/60 border border-slate-700/50">
+                                <p className="text-slate-500">不足しやすいビタミン</p>
+                                <p className="text-rose-300 font-bold">{lowVitKeys.length ? lowVitKeys.join("、") : "データ蓄積中"}</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="glass-card rounded-3xl p-5 mb-4">
+                        <h2 className="text-sm font-black text-white mb-2">不足リマインド</h2>
+                        <p className="text-xs text-slate-300">{reminderText}</p>
+                        <button
+                            type="button"
+                            onClick={triggerReminderNotification}
+                            className="mt-3 py-2 px-3 rounded-xl border border-cyan-500/40 text-cyan-300 text-xs font-bold"
+                        >
+                            {notifyEnabled ? "通知を再送する" : "この内容を通知で受け取る"}
+                        </button>
+                    </div>
+
+                    <div className="glass-card rounded-3xl p-5 mb-4">
                         <h2 className="text-sm font-black text-white mb-3 flex items-center gap-2">
                             <span className="w-2 h-2 rounded-full bg-cyan-400 shadow-[0_0_8px_#22d3ee]" />
                             今日のビタミン（推定・合計）
@@ -910,16 +1058,43 @@ JSONスキーマ:
 
                     <div className="glass-card rounded-3xl p-5 mb-4">
                         <h2 className="text-sm font-black text-white mb-3">食事ログ（履歴）</h2>
+                        <div className="grid grid-cols-3 gap-2 mb-3">
+                            <input
+                                className="col-span-3 bg-slate-900/70 border border-slate-700/60 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-cyan-500/60"
+                                placeholder="メニュー名で検索"
+                                value={historySearch}
+                                onChange={(e) => setHistorySearch(e.target.value)}
+                            />
+                            <select
+                                className="bg-slate-900/70 border border-slate-700/60 rounded-xl px-2 py-2 text-xs text-white outline-none"
+                                value={historyMealTypeFilter}
+                                onChange={(e) => setHistoryMealTypeFilter(e.target.value)}
+                            >
+                                <option value="all">すべて</option>
+                                <option value="breakfast">朝食</option>
+                                <option value="lunch">昼食</option>
+                                <option value="dinner">夕食</option>
+                            </select>
+                            <select
+                                className="col-span-2 bg-slate-900/70 border border-slate-700/60 rounded-xl px-2 py-2 text-xs text-white outline-none"
+                                value={historySort}
+                                onChange={(e) => setHistorySort(e.target.value)}
+                            >
+                                <option value="newest">新しい順</option>
+                                <option value="kcal_desc">カロリー高い順</option>
+                                <option value="kcal_asc">カロリー低い順</option>
+                            </select>
+                        </div>
                         {error && !sheetOpen && (
                             <p className="text-rose-400 text-xs mb-2">{error}</p>
                         )}
                         {loadingMeals ? (
                             <p className="text-slate-500 text-sm">読み込み中…</p>
-                        ) : mealLogs.length === 0 ? (
+                        ) : filteredMealLogs.length === 0 ? (
                             <p className="text-slate-500 text-sm">まだ記録がありません。下のボタンで撮影してください。</p>
                         ) : (
                             <ul className="space-y-3">
-                                {mealLogs.map((m) => (
+                                {filteredMealLogs.map((m) => (
                                     <li key={m.id} className="flex gap-3 bg-slate-800/40 rounded-2xl p-3 border border-slate-700/40">
                                         {m.imageUrl ? (
                                             <img src={m.imageUrl} alt="" className="w-20 h-20 rounded-xl object-cover shrink-0" />
@@ -944,20 +1119,29 @@ JSONスキーマ:
 
                     {/* 中央 FAB */}
                     <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-40">
-                        <button
-                            type="button"
-                            onClick={openCamera}
-                            className="w-24 h-24 rounded-full bg-gradient-to-br from-cyan-400 to-teal-600 flex items-center justify-center glow-ring active:scale-95 transition-transform shadow-2xl"
-                            aria-label="食事を撮影"
-                        >
-                            <svg className="w-11 h-11 text-slate-950" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                                    d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                                    d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
-                            </svg>
-                        </button>
-                        <p className="text-center text-[10px] text-slate-500 mt-2 font-bold tracking-wider">SCAN MEAL</p>
+                        <div className="flex items-end gap-3">
+                            <button
+                                type="button"
+                                onClick={() => { openCamera(); setPreviewResult(null); setEditedMenuText(""); }}
+                                className="w-14 h-14 rounded-full border border-cyan-500/40 text-cyan-300 text-[11px] font-bold bg-slate-900/80"
+                            >
+                                手入力
+                            </button>
+                            <button
+                                type="button"
+                                onClick={openCamera}
+                                className="w-24 h-24 rounded-full bg-gradient-to-br from-cyan-400 to-teal-600 flex items-center justify-center glow-ring active:scale-95 transition-transform shadow-2xl"
+                                aria-label="食事を撮影"
+                            >
+                                <svg className="w-11 h-11 text-slate-950" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                        d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                        d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                            </button>
+                        </div>
+                        <p className="text-center text-[10px] text-slate-500 mt-2 font-bold tracking-wider">SCAN / MANUAL</p>
                     </div>
 
                     {/* 解析シート */}
@@ -986,6 +1170,10 @@ JSONスキーマ:
                                             <p className="text-xs text-slate-500 font-bold">推定メニュー</p>
                                             <p className="text-white font-bold">{(previewResult.menu || []).join("、")}</p>
                                             <p className="text-3xl font-black text-cyan-400 mt-2 tabular-nums">{previewResult.calories_kcal} <span className="text-lg text-slate-400">kcal</span></p>
+                                            <p className={`mt-2 text-xs font-bold ${Number(previewResult.confidence_score || 0) < 60 ? "text-amber-300" : "text-emerald-300"}`}>
+                                                判定信頼度: {Math.round(Number(previewResult.confidence_score || 0))}%
+                                                {Number(previewResult.confidence_score || 0) < 60 ? "（低め: 手動訂正推奨）" : ""}
+                                            </p>
                                         </div>
                                         <div className="mb-4 p-3 rounded-2xl bg-slate-800/50 border border-slate-700/50">
                                             <p className="text-xs font-bold text-slate-400 mb-2">判定を訂正</p>
@@ -1093,6 +1281,16 @@ JSONスキーマ:
                                                 )}
                                             </div>
                                         )}
+                                        {previewResult.substitute_suggestions?.length > 0 && (
+                                            <div className="mb-4 p-3 rounded-2xl bg-slate-800/50 border border-slate-700/50 text-sm">
+                                                <p className="text-slate-300 font-bold mb-2">食材の代替提案</p>
+                                                <ul className="space-y-1">
+                                                    {previewResult.substitute_suggestions.slice(0, 4).map((x, i) => (
+                                                        <li key={i} className="text-slate-300 text-xs">・{x}</li>
+                                                    ))}
+                                                </ul>
+                                            </div>
+                                        )}
                                         <div className="mb-6">
                                             <h3 className="text-sm font-black text-white mb-2 flex items-center gap-2">
                                                 ビタミン詳細（この食事）
@@ -1133,7 +1331,25 @@ JSONスキーマ:
                                     </>
                                 )}
                                 {!previewResult && !analyzing && (
-                                    <div className="grid grid-cols-2 gap-2">
+                                    <div className="space-y-3">
+                                        <div className="p-3 rounded-2xl bg-slate-900/70 border border-slate-700/60">
+                                            <p className="text-xs text-slate-400 font-bold mb-2">手入力で解析</p>
+                                            <input
+                                                className="w-full bg-slate-900/70 border border-slate-600/50 rounded-xl px-3 py-2 text-sm text-white outline-none focus:border-cyan-500/60"
+                                                value={editedMenuText}
+                                                onChange={(e) => setEditedMenuText(e.target.value)}
+                                                placeholder="例: サバ定食、納豆、味噌汁"
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={analyzeFromTextOnly}
+                                                disabled={recalculating}
+                                                className="mt-2 w-full py-2 rounded-xl border border-cyan-500/40 text-cyan-300 font-bold text-xs disabled:opacity-50"
+                                            >
+                                                {recalculating ? "解析中…" : "入力内容で解析"}
+                                            </button>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2">
                                         <button
                                             type="button"
                                             onClick={chooseFromCamera}
@@ -1148,6 +1364,7 @@ JSONスキーマ:
                                         >
                                             アルバムから選択
                                         </button>
+                                        </div>
                                     </div>
                                 )}
                             </div>
@@ -1192,6 +1409,19 @@ JSONスキーマ:
                                                 required
                                             />
                                         </div>
+                                    </div>
+                                    <div>
+                                        <label className="text-xs text-slate-500 font-bold">目標モード</label>
+                                        <select
+                                            className="mt-1 w-full bg-slate-800/80 border border-slate-600/50 rounded-2xl px-4 py-3 text-white outline-none focus:border-cyan-500/60"
+                                            value={editGoalMode}
+                                            onChange={(e) => setEditGoalMode(e.target.value)}
+                                        >
+                                            <option value="balance">維持（バランス）</option>
+                                            <option value="cut">減量</option>
+                                            <option value="bulk">増量</option>
+                                            <option value="health">体調改善</option>
+                                        </select>
                                     </div>
                                     <div className="grid grid-cols-2 gap-3">
                                         <div>
