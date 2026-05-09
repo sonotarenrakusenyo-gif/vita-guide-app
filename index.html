@@ -584,7 +584,6 @@ JSONスキーマ:
             const [historySearch, setHistorySearch] = React.useState("");
             const [historyMealTypeFilter, setHistoryMealTypeFilter] = React.useState("all");
             const [historySort, setHistorySort] = React.useState("newest");
-            const [notifyEnabled, setNotifyEnabled] = React.useState(false);
             const [mainTab, setMainTab] = React.useState("home");
             const [detailMeal, setDetailMeal] = React.useState(null);
             const [savingMeal, setSavingMeal] = React.useState(false);
@@ -795,28 +794,6 @@ JSONスキーマ:
                     setError(err.message || "テキスト解析に失敗しました");
                 }
                 setRecalculating(false);
-            };
-
-            const triggerReminderNotification = async () => {
-                try {
-                    if (!("Notification" in window)) {
-                        setError("このブラウザは通知に対応していません");
-                        return;
-                    }
-                    let permission = Notification.permission;
-                    if (permission === "default") {
-                        permission = await Notification.requestPermission();
-                    }
-                    if (permission !== "granted") {
-                        setError("通知が許可されていません");
-                        return;
-                    }
-                    new Notification("Vita-Guide リマインド", { body: reminderText });
-                    setNotifyEnabled(true);
-                } catch (e) {
-                    console.error(e);
-                    setError("通知の送信に失敗しました");
-                }
             };
 
             const saveMeal = async () => {
@@ -1134,19 +1111,8 @@ JSONスキーマ:
                     {mainTab === "settings" && (
                     <div className="glass-card rounded-3xl p-5 mb-4 space-y-5">
                         <div>
-                            <h2 className="text-sm font-black text-white mb-2">不足リマインド</h2>
+                            <h2 className="text-sm font-black text-white mb-2">不足のヒント</h2>
                             <p className="text-xs text-slate-300">{reminderText}</p>
-                            <p className="text-[10px] text-slate-500 mt-2 leading-relaxed">
-                                「この内容を通知で受け取る」は、この端末のブラウザ通知です（インストール型アプリのプッシュ通知ではありません）。
-                                iPhone の Safari では OS の設定で通知を許可する必要があります。
-                            </p>
-                            <button
-                                type="button"
-                                onClick={triggerReminderNotification}
-                                className="mt-3 py-2 px-3 rounded-xl border border-cyan-500/40 text-cyan-300 text-xs font-bold"
-                            >
-                                {notifyEnabled ? "通知を再送する" : "この内容を通知で受け取る"}
-                            </button>
                         </div>
                         <div className="border-t border-slate-700/50 pt-4">
                             <h2 className="text-sm font-black text-white mb-2">プロフィール・目標</h2>
