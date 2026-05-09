@@ -42,8 +42,8 @@
         const db = firebase.firestore();
         const storage = firebase.storage();
 
-        /** 成人向け目安（1日）— ダッシュボードの過不足表示用（おおよその目安） */
-        const VITAMIN_RDA = {
+        /** 基本の成人向け目安（1日） */
+        const VITAMIN_RDA_BASE = {
             A_ug_RAE: { label: "ビタミンA", unit: "µg RAE", rda: 700 },
             B1_mg: { label: "ビタミンB1", unit: "mg", rda: 1.0 },
             B2_mg: { label: "ビタミンB2", unit: "mg", rda: 1.1 },
@@ -55,13 +55,48 @@
             folate_ug: { label: "葉酸", unit: "µg", rda: 240 },
             niacin_mg: { label: "ナイアシン", unit: "mg", rda: 13 },
         };
-        const MINERAL_RDA = {
+        const MINERAL_RDA_BASE = {
             calcium_mg: { label: "カルシウム", unit: "mg", rda: 650 },
             iron_mg: { label: "鉄", unit: "mg", rda: 7.5 },
             zinc_mg: { label: "亜鉛", unit: "mg", rda: 9 },
             magnesium_mg: { label: "マグネシウム", unit: "mg", rda: 340 },
             potassium_mg: { label: "カリウム", unit: "mg", rda: 2500 },
         };
+
+        function getPersonalizedRda(profile) {
+            const sex = profile?.sex === "male" || profile?.sex === "female" ? profile.sex : "female";
+            const age = Number(profile?.age);
+            const isMinor = Number.isFinite(age) && age > 0 && age < 18;
+            const vitamin = JSON.parse(JSON.stringify(VITAMIN_RDA_BASE));
+            const mineral = JSON.parse(JSON.stringify(MINERAL_RDA_BASE));
+
+            if (sex === "male") {
+                vitamin.A_ug_RAE.rda = 900;
+                vitamin.B1_mg.rda = 1.4;
+                vitamin.B2_mg.rda = 1.6;
+                vitamin.B6_mg.rda = 1.4;
+                vitamin.E_mg.rda = 7.0;
+                vitamin.niacin_mg.rda = 15;
+                mineral.calcium_mg.rda = 750;
+                mineral.iron_mg.rda = 7.5;
+                mineral.zinc_mg.rda = 11;
+                mineral.magnesium_mg.rda = 370;
+                mineral.potassium_mg.rda = 3000;
+            }
+
+            if (isMinor) {
+                vitamin.A_ug_RAE.rda = Math.round(vitamin.A_ug_RAE.rda * 0.85);
+                vitamin.B1_mg.rda = Math.round(vitamin.B1_mg.rda * 10) / 10;
+                vitamin.B2_mg.rda = Math.round(vitamin.B2_mg.rda * 10) / 10;
+                vitamin.B6_mg.rda = Math.round(vitamin.B6_mg.rda * 10) / 10;
+                vitamin.C_mg.rda = 85;
+                vitamin.D_ug.rda = 5;
+                vitamin.folate_ug.rda = 220;
+                mineral.calcium_mg.rda = 700;
+                mineral.iron_mg.rda = sex === "male" ? 7 : 10.5;
+            }
+            return { vitamin, mineral };
+        }
 
         /** APIキーはVercelサーバー側で保持し、クライアントからは直接送らない */
         async function analyzeMealWithGemini(base64Image, mimeType, profile) {
@@ -77,6 +112,8 @@
 - ニックネーム: ${profile?.name || "不明"}
 - 現在体重: ${profile?.weight ?? "?"} kg
 - 目標体重: ${profile?.goalWeight ?? "?"} kg
+- 性別: ${profile?.sex === "male" ? "男性" : profile?.sex === "female" ? "女性" : "未設定"}
+- 年齢: ${profile?.age ?? "未設定"}
 
 JSONスキーマ:
 {
@@ -162,7 +199,7 @@ JSONスキーマ:
         }
 
         function sumVitaminsFromMeals(meals) {
-            const keys = Object.keys(VITAMIN_RDA);
+            const keys = Object.keys(VITAMIN_RDA_BASE);
             const sum = {};
             keys.forEach((k) => { sum[k] = 0; });
             meals.forEach((m) => {
@@ -175,7 +212,7 @@ JSONスキーマ:
             return sum;
         }
         function sumMineralsFromMeals(meals) {
-            const keys = Object.keys(MINERAL_RDA);
+            const keys = Object.keys(MINERAL_RDA_BASE);
             const sum = {};
             keys.forEach((k) => { sum[k] = 0; });
             meals.forEach((m) => {
@@ -290,6 +327,8 @@ JSONスキーマ:
             const [name, setName] = React.useState('');
             const [weight, setWeight] = React.useState('60');
             const [goalWeight, setGoalWeight] = React.useState('58');
+            const [sex, setSex] = React.useState('female');
+            const [age, setAge] = React.useState('30');
             const [busy, setBusy] = React.useState(false);
 
             const handleSubmit = async (e) => {
@@ -299,6 +338,8 @@ JSONスキーマ:
                     name: name.trim(),
                     weight: parseFloat(weight) || 60,
                     goalWeight: parseFloat(goalWeight) || 60,
+                    sex,
+                    age: parseInt(age, 10) || 30,
                     createdAt: firebase.firestore.FieldValue.serverTimestamp()
                 };
                 await db.collection("users").doc(userId).set(data);
@@ -347,6 +388,31 @@ JSONスキーマ:
                                     />
                                 </div>
                             </div>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="text-xs text-slate-500 font-bold">性別</label>
+                                    <select
+                                        className="mt-1 w-full bg-slate-800/80 border border-slate-600/50 rounded-2xl px-4 py-3 text-white outline-none focus:border-cyan-500/60"
+                                        value={sex}
+                                        onChange={(e) => setSex(e.target.value)}
+                                    >
+                                        <option value="female">女性</option>
+                                        <option value="male">男性</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="text-xs text-slate-500 font-bold">年齢</label>
+                                    <input
+                                        type="number"
+                                        min="10"
+                                        max="100"
+                                        className="mt-1 w-full bg-slate-800/80 border border-slate-600/50 rounded-2xl px-4 py-3 text-white outline-none focus:border-cyan-500/60"
+                                        value={age}
+                                        onChange={(e) => setAge(e.target.value)}
+                                        required
+                                    />
+                                </div>
+                            </div>
                             <button
                                 type="submit"
                                 disabled={busy}
@@ -378,14 +444,14 @@ JSONスキーマ:
             );
         }
 
-        function VitaminGrid({ vitamins, insights, title }) {
-            const keys = Object.keys(VITAMIN_RDA);
+        function VitaminGrid({ vitamins, insights, title, referenceMap = VITAMIN_RDA_BASE }) {
+            const keys = Object.keys(referenceMap);
             return (
                 <div className="space-y-3">
                     {title && <p className="text-xs font-bold text-slate-400">{title}</p>}
                     <div className="grid gap-2">
                         {keys.map((key) => {
-                            const meta = VITAMIN_RDA[key];
+                            const meta = referenceMap[key];
                             const amount = Number(vitamins?.[key]) || 0;
                             const pct = Math.min(200, Math.round((amount / meta.rda) * 100));
                             let barColor = "bg-emerald-500";
@@ -424,14 +490,14 @@ JSONスキーマ:
                 </div>
             );
         }
-        function MineralGrid({ minerals, insights, title }) {
-            const keys = Object.keys(MINERAL_RDA);
+        function MineralGrid({ minerals, insights, title, referenceMap = MINERAL_RDA_BASE }) {
+            const keys = Object.keys(referenceMap);
             return (
                 <div className="space-y-3">
                     {title && <p className="text-xs font-bold text-slate-400">{title}</p>}
                     <div className="grid gap-2">
                         {keys.map((key) => {
-                            const meta = MINERAL_RDA[key];
+                            const meta = referenceMap[key];
                             const amount = Number(minerals?.[key]) || 0;
                             const pct = Math.min(200, Math.round((amount / meta.rda) * 100));
                             let barColor = "bg-emerald-500";
@@ -477,6 +543,8 @@ JSONスキーマ:
             const [editName, setEditName] = React.useState(profile?.name || "");
             const [editWeight, setEditWeight] = React.useState(String(profile?.weight ?? ""));
             const [editGoal, setEditGoal] = React.useState(String(profile?.goalWeight ?? ""));
+            const [editSex, setEditSex] = React.useState(profile?.sex || "female");
+            const [editAge, setEditAge] = React.useState(String(profile?.age ?? 30));
             const [analyzing, setAnalyzing] = React.useState(false);
             const [recalculating, setRecalculating] = React.useState(false);
             const [error, setError] = React.useState(null);
@@ -503,8 +571,9 @@ JSONスキーマ:
             const pfc = pfcFromMeals(mealsToday);
             const vitSum = sumVitaminsFromMeals(mealsToday);
             const mineralSum = sumMineralsFromMeals(mealsToday);
-            const vitaminScore = micronutrientScore(vitSum, VITAMIN_RDA);
-            const mineralScore = micronutrientScore(mineralSum, MINERAL_RDA);
+            const personalizedRda = React.useMemo(() => getPersonalizedRda(profile), [profile]);
+            const vitaminScore = micronutrientScore(vitSum, personalizedRda.vitamin);
+            const mineralScore = micronutrientScore(mineralSum, personalizedRda.mineral);
 
             const loadMeals = React.useCallback(async () => {
                 if (!user?.uid) return;
@@ -542,6 +611,8 @@ JSONスキーマ:
                     setEditName(profile?.name || "");
                     setEditWeight(profile?.weight != null ? String(profile.weight) : "");
                     setEditGoal(profile?.goalWeight != null ? String(profile.goalWeight) : "");
+                    setEditSex(profile?.sex || "female");
+                    setEditAge(profile?.age != null ? String(profile.age) : "30");
                 }
             }, [profileOpen, profile]);
 
@@ -550,10 +621,13 @@ JSONスキーマ:
                 if (!user?.uid) return;
                 const w = parseFloat(editWeight);
                 const g = parseFloat(editGoal);
+                const a = parseInt(editAge, 10);
                 const data = {
                     name: (editName.trim() || profile?.name || "ユーザー"),
                     weight: Number.isFinite(w) ? w : (profile?.weight ?? 60),
                     goalWeight: Number.isFinite(g) ? g : (profile?.goalWeight ?? profile?.weight ?? 60),
+                    sex: editSex === "male" ? "male" : "female",
+                    age: Number.isFinite(a) ? a : (profile?.age ?? 30),
                 };
                 await db.collection("users").doc(user.uid).update(data);
                 setProfile({ ...profile, ...data });
@@ -728,6 +802,10 @@ JSONスキーマ:
                                 <span className="text-slate-600"> · </span>
                                 目標{" "}
                                 {profile?.goalWeight != null ? `${profile.goalWeight} kg` : "未設定"}
+                                <span className="text-slate-600"> · </span>
+                                {profile?.sex === "male" ? "男性" : profile?.sex === "female" ? "女性" : "性別未設定"}
+                                <span className="text-slate-600"> · </span>
+                                {profile?.age ?? "?"}歳
                             </p>
                         </div>
                         <div className="flex flex-col items-end gap-2 shrink-0">
@@ -804,7 +882,7 @@ JSONスキーマ:
                         ) : mealsToday.length === 0 ? (
                             <p className="text-slate-500 text-sm">食事を記録すると、ここに1日の推定合計が表示されます。</p>
                         ) : (
-                            <VitaminGrid vitamins={vitSum} insights={null} />
+                            <VitaminGrid vitamins={vitSum} insights={null} referenceMap={personalizedRda.vitamin} />
                         )}
                     </div>
                     <div className="glass-card rounded-3xl p-5 mb-4">
@@ -817,7 +895,7 @@ JSONスキーマ:
                         ) : mealsToday.length === 0 ? (
                             <p className="text-slate-500 text-sm">食事を記録すると、ここに1日の推定合計が表示されます。</p>
                         ) : (
-                            <MineralGrid minerals={mineralSum} insights={null} />
+                            <MineralGrid minerals={mineralSum} insights={null} referenceMap={personalizedRda.mineral} />
                         )}
                     </div>
 
@@ -966,11 +1044,11 @@ JSONスキーマ:
                                                 </div>
                                                 <div className="rounded-xl bg-slate-900/70 p-2 border border-slate-700/50">
                                                     <p className="text-slate-500">ビタミン（総合）</p>
-                                                    <p className="text-fuchsia-300 font-bold">{micronutrientScore(previewResult.vitamins || {}, VITAMIN_RDA)}%</p>
+                                                    <p className="text-fuchsia-300 font-bold">{micronutrientScore(previewResult.vitamins || {}, personalizedRda.vitamin)}%</p>
                                                 </div>
                                                 <div className="rounded-xl bg-slate-900/70 p-2 border border-slate-700/50">
                                                     <p className="text-slate-500">ミネラル（総合）</p>
-                                                    <p className="text-teal-300 font-bold">{micronutrientScore(previewResult.minerals || {}, MINERAL_RDA)}%</p>
+                                                    <p className="text-teal-300 font-bold">{micronutrientScore(previewResult.minerals || {}, personalizedRda.mineral)}%</p>
                                                 </div>
                                             </div>
                                         </div>
@@ -991,6 +1069,7 @@ JSONスキーマ:
                                             <VitaminGrid
                                                 vitamins={previewResult.vitamins}
                                                 insights={previewResult.vitamin_insights}
+                                                referenceMap={personalizedRda.vitamin}
                                             />
                                         </div>
                                         <div className="mb-6">
@@ -1000,6 +1079,7 @@ JSONスキーマ:
                                             <MineralGrid
                                                 minerals={previewResult.minerals}
                                                 insights={previewResult.mineral_insights}
+                                                referenceMap={personalizedRda.mineral}
                                             />
                                         </div>
                                         <div className="flex gap-2">
@@ -1078,6 +1158,31 @@ JSONスキーマ:
                                                 className="mt-1 w-full bg-slate-800/80 border border-slate-600/50 rounded-2xl px-4 py-3 text-white outline-none focus:border-cyan-500/60"
                                                 value={editGoal}
                                                 onChange={(e) => setEditGoal(e.target.value)}
+                                                required
+                                            />
+                                        </div>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-3">
+                                        <div>
+                                            <label className="text-xs text-slate-500 font-bold">性別</label>
+                                            <select
+                                                className="mt-1 w-full bg-slate-800/80 border border-slate-600/50 rounded-2xl px-4 py-3 text-white outline-none focus:border-cyan-500/60"
+                                                value={editSex}
+                                                onChange={(e) => setEditSex(e.target.value)}
+                                            >
+                                                <option value="female">女性</option>
+                                                <option value="male">男性</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="text-xs text-slate-500 font-bold">年齢</label>
+                                            <input
+                                                type="number"
+                                                min="10"
+                                                max="100"
+                                                className="mt-1 w-full bg-slate-800/80 border border-slate-600/50 rounded-2xl px-4 py-3 text-white outline-none focus:border-cyan-500/60"
+                                                value={editAge}
+                                                onChange={(e) => setEditAge(e.target.value)}
                                                 required
                                             />
                                         </div>
