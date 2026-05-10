@@ -627,6 +627,7 @@ JSONスキーマ:
             const [mainTab, setMainTab] = React.useState("home");
             const [detailMeal, setDetailMeal] = React.useState(null);
             const [savingMeal, setSavingMeal] = React.useState(false);
+            const [deletingMealId, setDeletingMealId] = React.useState(null);
             const [nowTick, setNowTick] = React.useState(Date.now());
             const [chartRange, setChartRange] = React.useState("7d");
             const cameraInputRef = React.useRef(null);
@@ -946,6 +947,23 @@ JSONスキーマ:
                 setPreviewFile(null);
                 setPreviewResult(null);
                 setSheetOpen(false);
+            };
+
+            const deleteMeal = async (mealId) => {
+                if (!user?.uid || !mealId || deletingMealId) return;
+                const ok = window.confirm("この記録を削除しますか？");
+                if (!ok) return;
+                setDeletingMealId(mealId);
+                setError(null);
+                try {
+                    await db.collection("users").doc(user.uid).collection("meals").doc(mealId).delete();
+                    setMealLogs((prev) => prev.filter((m) => m.id !== mealId));
+                    setDetailMeal((prev) => (prev?.id === mealId ? null : prev));
+                } catch (err) {
+                    console.error(err);
+                    setError("記録の削除に失敗しました。しばらくして再試行してください。");
+                }
+                setDeletingMealId(null);
             };
 
             return (
@@ -1620,13 +1638,23 @@ JSONスキーマ:
                                     <h3 className="text-sm font-black text-white mb-2">ミネラル（この食事）</h3>
                                     <MineralGrid minerals={detailMeal.minerals} insights={detailMeal.mineral_insights} referenceMap={personalizedRda.mineral} />
                                 </div>
-                                <button
-                                    type="button"
-                                    onClick={() => setDetailMeal(null)}
-                                    className="w-full py-3 rounded-2xl border border-slate-600 text-slate-300 font-bold text-sm"
-                                >
-                                    閉じる
-                                </button>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => deleteMeal(detailMeal.id)}
+                                        disabled={deletingMealId === detailMeal.id}
+                                        className="w-full py-3 rounded-2xl border border-rose-500/60 text-rose-300 font-bold text-sm disabled:opacity-60"
+                                    >
+                                        {deletingMealId === detailMeal.id ? "削除中…" : "この履歴を削除"}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setDetailMeal(null)}
+                                        className="w-full py-3 rounded-2xl border border-slate-600 text-slate-300 font-bold text-sm"
+                                    >
+                                        閉じる
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     )}
