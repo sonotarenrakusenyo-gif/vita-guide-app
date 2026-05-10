@@ -208,6 +208,46 @@ JSONスキーマ:
             return d;
         }
 
+        function toLocalDateKey(date) {
+            if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+            const y = date.getFullYear();
+            const m = String(date.getMonth() + 1).padStart(2, "0");
+            const d = String(date.getDate()).padStart(2, "0");
+            return `${y}-${m}-${d}`;
+        }
+
+        function mealDateOrNull(meal) {
+            const d = meal?.createdAt?.toDate ? meal.createdAt.toDate() : (meal?.createdAt ? new Date(meal.createdAt) : null);
+            if (d instanceof Date && !Number.isNaN(d.getTime())) return d;
+            const clientD = meal?.createdAtClient ? new Date(meal.createdAtClient) : null;
+            if (clientD instanceof Date && !Number.isNaN(clientD.getTime())) return clientD;
+            return null;
+        }
+
+        function buildDailyCaloriesSeries(meals, days, endDate = new Date()) {
+            const end = new Date(endDate);
+            end.setHours(0, 0, 0, 0);
+            const dayMap = new Map();
+            meals.forEach((m) => {
+                const d = mealDateOrNull(m);
+                if (!d) return;
+                const key = toLocalDateKey(d);
+                dayMap.set(key, (dayMap.get(key) || 0) + (Number(m.calories_kcal) || 0));
+            });
+            const out = [];
+            for (let i = days - 1; i >= 0; i -= 1) {
+                const d = new Date(end);
+                d.setDate(end.getDate() - i);
+                const key = toLocalDateKey(d);
+                out.push({
+                    key,
+                    label: new Intl.DateTimeFormat("ja-JP", { month: "numeric", day: "numeric" }).format(d),
+                    kcal: Math.round(dayMap.get(key) || 0),
+                });
+            }
+            return out;
+        }
+
         function sumVitaminsFromMeals(meals) {
             const keys = Object.keys(VITAMIN_RDA_BASE);
             const sum = {};
@@ -587,21 +627,29 @@ JSONスキーマ:
             const [mainTab, setMainTab] = React.useState("home");
             const [detailMeal, setDetailMeal] = React.useState(null);
             const [savingMeal, setSavingMeal] = React.useState(false);
+            const [nowTick, setNowTick] = React.useState(Date.now());
+            const [chartRange, setChartRange] = React.useState("7d");
             const cameraInputRef = React.useRef(null);
             const galleryInputRef = React.useRef(null);
 
             const APP_DEPLOY_TAG = "2026-05-10-tabs";
+            React.useEffect(() => {
+                const timer = setInterval(() => setNowTick(Date.now()), 60000);
+                return () => clearInterval(timer);
+            }, []);
 
             const dailyTarget = suggestedDailyCalories(profile);
+            const todayKey = React.useMemo(() => toLocalDateKey(new Date(nowTick)), [nowTick]);
+            const todayLabel = React.useMemo(
+                () => new Intl.DateTimeFormat("ja-JP", { month: "numeric", day: "numeric", weekday: "short" }).format(new Date(nowTick)),
+                [nowTick]
+            );
             const mealsToday = React.useMemo(() => {
-                const start = startOfToday().getTime();
                 return mealLogs.filter((m) => {
-                    const d = m.createdAt?.toDate ? m.createdAt.toDate() : (m.createdAt ? new Date(m.createdAt) : null);
-                    const clientD = m.createdAtClient ? new Date(m.createdAtClient) : null;
-                    const t = d?.getTime?.() || clientD?.getTime?.() || 0;
-                    return t >= start;
+                    const d = mealDateOrNull(m);
+                    return d ? toLocalDateKey(d) === todayKey : false;
                 });
-            }, [mealLogs]);
+            }, [mealLogs, todayKey]);
             const todayKcal = mealsToday.reduce((s, m) => s + (Number(m.calories_kcal) || 0), 0);
             const remaining = Math.max(0, dailyTarget - todayKcal);
             const pfc = pfcFromMeals(mealsToday);
@@ -610,19 +658,20 @@ JSONスキーマ:
             const personalizedRda = React.useMemo(() => getPersonalizedRda(profile), [profile]);
             const vitaminScore = micronutrientScore(vitSum, personalizedRda.vitamin);
             const mineralScore = micronutrientScore(mineralSum, personalizedRda.mineral);
+            const weeklySeries = React.useMemo(() => buildDailyCaloriesSeries(mealLogs, 7, new Date(nowTick)), [mealLogs, nowTick]);
+            const monthlySeries = React.useMemo(() => buildDailyCaloriesSeries(mealLogs, 30, new Date(nowTick)), [mealLogs, nowTick]);
             const weeklyMeals = React.useMemo(() => {
-                const now = Date.now();
-                const weekAgo = now - (7 * 24 * 60 * 60 * 1000);
+                const weeklyKeys = new Set(weeklySeries.map((x) => x.key));
                 return mealLogs.filter((m) => {
-                    const d = m.createdAt?.toDate ? m.createdAt.toDate() : (m.createdAt ? new Date(m.createdAt) : null);
-                    const clientD = m.createdAtClient ? new Date(m.createdAtClient) : null;
-                    const t = d?.getTime?.() || clientD?.getTime?.() || 0;
-                    return t >= weekAgo;
+                    const d = mealDateOrNull(m);
+                    return d ? weeklyKeys.has(toLocalDateKey(d)) : false;
                 });
-            }, [mealLogs]);
+            }, [mealLogs, weeklySeries]);
             const weeklyPfc = pfcFromMeals(weeklyMeals);
-            const weeklyKcalAvg = weeklyMeals.length ? Math.round(weeklyMeals.reduce((s, m) => s + (Number(m.calories_kcal) || 0), 0) / 7) : 0;
+            const weeklyKcalAvg = Math.round(weeklySeries.reduce((s, x) => s + x.kcal, 0) / 7);
             const weekVit = sumVitaminsFromMeals(weeklyMeals);
+            const chartSeries = chartRange === "30d" ? monthlySeries : weeklySeries;
+            const chartMax = Math.max(dailyTarget, ...chartSeries.map((x) => x.kcal), 1);
             const lowVitKeys = Object.keys(personalizedRda.vitamin)
                 .map((k) => ({ k, pct: ((Number(weekVit[k]) || 0) / personalizedRda.vitamin[k].rda) * 100 }))
                 .sort((a, b) => a.pct - b.pct)
@@ -652,6 +701,20 @@ JSONスキーマ:
                 });
                 return list;
             }, [mealLogs, historySearch, historyMealTypeFilter, historySort]);
+            const groupedMealLogs = React.useMemo(() => {
+                const groups = [];
+                filteredMealLogs.forEach((m) => {
+                    const d = mealDateOrNull(m);
+                    const key = d ? toLocalDateKey(d) : "日付不明";
+                    const label = d
+                        ? new Intl.DateTimeFormat("ja-JP", { year: "numeric", month: "numeric", day: "numeric", weekday: "short" }).format(d)
+                        : "日付不明";
+                    const last = groups[groups.length - 1];
+                    if (!last || last.key !== key) groups.push({ key, label, meals: [m] });
+                    else last.meals.push(m);
+                });
+                return groups;
+            }, [filteredMealLogs]);
 
             const loadMeals = React.useCallback(async () => {
                 if (!user?.uid) return;
@@ -944,7 +1007,7 @@ JSONスキーマ:
                     {mainTab === "home" && (
                     <>
                     <div className="glass-card rounded-3xl p-6 mb-4 animate-fadeIn">
-                        <p className="text-xs font-bold text-slate-400 mb-1">今日の摂取カロリー</p>
+                        <p className="text-xs font-bold text-slate-400 mb-1">今日の摂取カロリー（{todayLabel}）</p>
                         <div className="flex items-baseline gap-2">
                             <span className="text-5xl font-black text-white tabular-nums">{Math.round(todayKcal)}</span>
                             <span className="text-lg font-bold text-slate-500">/ {dailyTarget} kcal</span>
@@ -1015,6 +1078,48 @@ JSONスキーマ:
                     </div>
 
                     <div className="glass-card rounded-3xl p-5 mb-4">
+                        <div className="flex items-center justify-between gap-2 mb-3">
+                            <h2 className="text-sm font-black text-white">摂取カロリー推移</h2>
+                            <div className="grid grid-cols-2 gap-2 text-[11px]">
+                                <button
+                                    type="button"
+                                    onClick={() => setChartRange("7d")}
+                                    className={`px-3 py-1.5 rounded-lg border ${chartRange === "7d" ? "border-cyan-400 text-cyan-300 bg-cyan-500/10" : "border-slate-600 text-slate-400"}`}
+                                >
+                                    1週間
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setChartRange("30d")}
+                                    className={`px-3 py-1.5 rounded-lg border ${chartRange === "30d" ? "border-cyan-400 text-cyan-300 bg-cyan-500/10" : "border-slate-600 text-slate-400"}`}
+                                >
+                                    1か月
+                                </button>
+                            </div>
+                        </div>
+                        <div className="flex items-end gap-1.5 h-40 border-b border-slate-700/60 pb-2">
+                            {chartSeries.map((point, idx) => {
+                                const height = Math.max(4, Math.round((point.kcal / chartMax) * 120));
+                                const isTodayBar = point.key === todayKey;
+                                return (
+                                    <div key={`${point.key}-${idx}`} className="flex-1 min-w-0 flex flex-col items-center gap-1">
+                                        <div className="text-[9px] text-slate-500 leading-none">{point.kcal}</div>
+                                        <div
+                                            className={`w-full rounded-t-md ${isTodayBar ? "bg-cyan-400" : "bg-slate-500/70"}`}
+                                            style={{ height: `${height}px` }}
+                                            title={`${point.label}: ${point.kcal} kcal`}
+                                        />
+                                        <div className={`text-[9px] leading-none ${isTodayBar ? "text-cyan-300" : "text-slate-500"}`}>
+                                            {chartRange === "30d" ? point.label.split("/")[1] : point.label}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                        <p className="text-[10px] text-slate-500 mt-2">右端が本日。棒の高さで日別の摂取カロリーを確認できます。</p>
+                    </div>
+
+                    <div className="glass-card rounded-3xl p-5 mb-4">
                         <h2 className="text-sm font-black text-white mb-3 flex items-center gap-2">
                             <span className="w-2 h-2 rounded-full bg-cyan-400 shadow-[0_0_8px_#22d3ee]" />
                             今日のビタミン（推定・合計）
@@ -1075,9 +1180,13 @@ JSONスキーマ:
                         ) : filteredMealLogs.length === 0 ? (
                             <p className="text-slate-500 text-sm">まだ記録がありません。下のボタンで撮影してください。</p>
                         ) : (
-                            <ul className="space-y-3">
-                                {filteredMealLogs.map((m) => (
-                                    <li key={m.id}>
+                            <div className="space-y-4">
+                                {groupedMealLogs.map((group) => (
+                                    <div key={group.key}>
+                                        <p className="text-[11px] font-bold text-slate-400 mb-2">{group.label}</p>
+                                        <ul className="space-y-3">
+                                        {group.meals.map((m) => (
+                                            <li key={m.id}>
                                         <button
                                             type="button"
                                             onClick={() => setDetailMeal(m)}
@@ -1100,9 +1209,12 @@ JSONスキーマ:
                                             )}
                                         </div>
                                         </button>
-                                    </li>
+                                            </li>
+                                        ))}
+                                        </ul>
+                                    </div>
                                 ))}
-                            </ul>
+                            </div>
                         )}
                     </div>
                     </>
