@@ -683,6 +683,48 @@ JSONスキーマ:
                 if (lowVitKeys.length) return `不足しやすい栄養素: ${lowVitKeys.join("、")}。次の食事で補いましょう。`;
                 return "栄養バランスは良好です。水分補給も忘れずに。";
             }, [mealLogs.length, lowVitKeys.join("|")]);
+            const todayOverallAdvice = React.useMemo(() => {
+                const lines = [];
+                if (!mealsToday.length) {
+                    return [
+                        "まずは今日の食事を1件記録して、AIアドバイスを有効化しましょう。",
+                        "主食・主菜・副菜を1品ずつそろえると栄養バランスが安定しやすいです。",
+                    ];
+                }
+                if (todayKcal < dailyTarget * 0.7) lines.push("今日は摂取カロリーが少なめです。たんぱく質を含む軽食を1品追加しましょう。");
+                else if (todayKcal > dailyTarget * 1.2) lines.push("今日は摂取カロリーが多めです。次の食事は脂質を抑え、野菜を増やして調整しましょう。");
+                if (pfc.pPct < 15) lines.push("たんぱく質比率が低めです。鶏むね肉、卵、豆腐、ヨーグルトを優先すると改善しやすいです。");
+                if (pfc.fPct > 35) lines.push("脂質比率が高めです。揚げ物より蒸す・焼く調理にするとバランスが整います。");
+                if (vitaminScore < 70 || mineralScore < 70) {
+                    lines.push(`微量栄養素が不足気味です。特に ${lowVitKeys.slice(0, 2).join("・") || "ビタミン類"} を意識して補いましょう。`);
+                }
+                const recentFoods = Array.from(new Set(
+                    mealsToday.flatMap((m) => Array.isArray(m.recommended_foods) ? m.recommended_foods : [])
+                )).slice(0, 3);
+                if (recentFoods.length) lines.push(`次に食べる候補: ${recentFoods.join("、")}`);
+                if (!lines.length) lines.push("今日のバランスは良好です。この調子で水分補給と睡眠も意識して継続しましょう。");
+                return lines.slice(0, 4);
+            }, [mealsToday, todayKcal, dailyTarget, pfc.pPct, pfc.fPct, vitaminScore, mineralScore, lowVitKeys]);
+            const weeklyImprovementPlan = React.useMemo(() => {
+                const plan = [];
+                if (!weeklyMeals.length) {
+                    return [
+                        "今週はまず毎日1件の記録を目標にしましょう。",
+                        "朝・昼・夜のどれか1食だけでも固定して記録すると習慣化しやすいです。",
+                        "1週間後に推移グラフを見て、平均カロリーを確認しましょう。",
+                    ];
+                }
+                if (weeklyKcalAvg < dailyTarget * 0.8) plan.push("1週間の平均カロリーが低めです。朝食か間食で不足分を補い、代謝低下を防ぎましょう。");
+                else if (weeklyKcalAvg > dailyTarget * 1.15) plan.push("1週間の平均カロリーが高めです。夕食の主食量を1割減らして調整してみましょう。");
+                if (weeklyPfc.pPct < 16) plan.push("週平均でたんぱく質が不足傾向です。各食で手のひら1枚分のたんぱく源を目安にしましょう。");
+                if (weeklyPfc.fPct > 35) plan.push("週平均で脂質が多めです。ドレッシング・揚げ物・菓子の頻度を1段階下げましょう。");
+                if (lowVitKeys.length) plan.push(`不足傾向の ${lowVitKeys.slice(0, 3).join("、")} を補う食材を、週3回以上取り入れましょう。`);
+                const weekRecommend = Array.from(new Set(
+                    weeklyMeals.flatMap((m) => Array.isArray(m.recommended_foods) ? m.recommended_foods : [])
+                )).slice(0, 4);
+                if (weekRecommend.length) plan.push(`来週の優先食材: ${weekRecommend.join("、")}`);
+                return (plan.length ? plan : ["全体バランスは良好です。記録を継続し、運動と睡眠もセットで管理しましょう。"]).slice(0, 4);
+            }, [weeklyMeals, weeklyKcalAvg, dailyTarget, weeklyPfc.pPct, weeklyPfc.fPct, lowVitKeys]);
             const filteredMealLogs = React.useMemo(() => {
                 const q = historySearch.trim().toLowerCase();
                 let list = mealLogs.filter((m) => {
@@ -1072,6 +1114,15 @@ JSONスキーマ:
                             </div>
                         </div>
                     </div>
+
+                    <div className="glass-card rounded-3xl p-5 mb-4">
+                        <h2 className="text-sm font-black text-white mb-2">AI総合アドバイス（今日）</h2>
+                        <ul className="space-y-1.5">
+                            {todayOverallAdvice.map((line, idx) => (
+                                <li key={`today-advice-${idx}`} className="text-xs text-slate-300">・{line}</li>
+                            ))}
+                        </ul>
+                    </div>
                     </>
                     )}
 
@@ -1093,6 +1144,15 @@ JSONスキーマ:
                                 <p className="text-rose-300 font-bold">{lowVitKeys.length ? lowVitKeys.join("、") : "データ蓄積中"}</p>
                             </div>
                         </div>
+                    </div>
+
+                    <div className="glass-card rounded-3xl p-5 mb-4">
+                        <h2 className="text-sm font-black text-white mb-2">AI改善プラン（今週）</h2>
+                        <ul className="space-y-1.5">
+                            {weeklyImprovementPlan.map((line, idx) => (
+                                <li key={`week-plan-${idx}`} className="text-xs text-slate-300">・{line}</li>
+                            ))}
+                        </ul>
                     </div>
 
                     <div className="glass-card rounded-3xl p-5 mb-4">
